@@ -64,13 +64,11 @@ export const LoginView: React.FC<LoginViewProps> = ({
       {/* Container Box */}
       <div className="w-full max-w-md bg-white dark:bg-neutral-900 rounded-3xl border border-neutral-200 dark:border-neutral-800 shadow-xl overflow-hidden">
         {/* Header Accent */}
-        <div className="bg-gradient-to-r from-rose-600 via-rose-700 to-red-600 p-6 text-white text-center relative overflow-hidden">
+        <div className="bg-gradient-to-r from-brand-800 via-brand-900 to-brand-950 p-6 text-white text-center relative overflow-hidden">
           <div className="absolute -right-6 -bottom-6 w-28 h-28 bg-white/10 rounded-full blur-xl pointer-events-none" />
-          <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-white text-rose-600 font-black text-2xl shadow-md mb-3">
-            Y
-          </div>
-          <h1 className="text-xl font-bold tracking-tight">Sistem Penjualan Yakult</h1>
-          <p className="text-xs text-rose-100 mt-1 font-medium">
+          <img src={`${import.meta.env.BASE_URL}icon-putih.svg`} alt="Logo JOC" className="inline-block w-14 h-14 rounded-2xl shadow-md mb-3" />
+          <h1 className="text-xl font-bold tracking-tight">JOC</h1>
+          <p className="text-xs text-brand-100 mt-1 font-medium">
             Jember Operation Center
           </p>
         </div>
@@ -92,7 +90,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
                     : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
                 }`}
               >
-                <ShieldCheck className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
+                <ShieldCheck className="w-3.5 h-3.5 text-brand-600 dark:text-brand-400" />
                 <span>Admin Cabang</span>
               </button>
               <button
@@ -104,7 +102,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
                     : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
                 }`}
               >
-                <Building2 className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
+                <Building2 className="w-3.5 h-3.5 text-brand-600 dark:text-brand-400" />
                 <span>Akun TKU</span>
               </button>
             </div>
@@ -119,7 +117,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
                 <select
                   value={selectedTku}
                   onChange={(e) => setSelectedTku(Number(e.target.value))}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-rose-500 transition-colors"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 transition-colors"
                 >
                   {tkus.map((t, idx) => (
                     <option key={t.id || idx} value={idx}>
@@ -132,7 +130,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
 
             <button
               type="submit"
-              className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-rose-600 hover:bg-rose-700 active:scale-[0.99] text-white font-semibold text-sm shadow-md shadow-rose-600/25 transition-all"
+              className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-brand-600 hover:bg-brand-700 active:scale-[0.99] text-white font-semibold text-sm shadow-md shadow-brand-600/25 transition-all"
             >
               <span>Masuk</span>
               <ArrowRight className="w-4 h-4" />

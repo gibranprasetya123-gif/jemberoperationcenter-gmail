@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import confetti from 'canvas-confetti';
 import { 
   Building2, 
@@ -31,9 +31,11 @@ import {
   ListOrdered,
   Award,
   CalendarCheck,
-  GitCompare
+  GitCompare,
+  Copy
 } from 'lucide-react';
 import { AppState, VARIANTS, VariantCode, DailySalesRecord, TkuItem } from '../types';
+import { TrendChart } from '../components/TrendChart';
 import { 
   formatNumber, 
   formatPercent, 
@@ -47,6 +49,7 @@ import {
 } from '../services/storage';
 import { makeUnitAxis, makeNiceAxis, formatAxisLabel } from '../services/chartAxis';
 import { REAL_TKU_DAILY_SALES } from '../data/realSalesSeptember2026';
+import { saveTkuInputDraft, loadTkuInputDraft, clearTkuInputDraft } from '../services/inputDraft';
 
 interface TkuInputViewProps {
   state: AppState;
@@ -57,11 +60,53 @@ interface TkuInputViewProps {
   onUpdateBreakdownDay: (tkuIdx: number, variant: 'ALL' | VariantCode, dayIdx: number, val: number) => void;
   onBatchUpdateBreakdown?: (tkuIdx: number, updates: { variant: VariantCode | 'ALL'; dayIdx: number; val: number }[]) => void;
   showToast: (msg: string, type?: 'success' | 'error' | 'info') => void;
-  onSelectTku?: (tkuIdx: number) => void;
   onSwitchToAdmin?: () => void;
 }
 
 type TkuSubMenu = 'ringkasan' | 'input' | 'breakdown' | 'realisasi';
+
+// Kolom angka yang bisa dihapus & diketik ulang dengan bebas (angka depan tidak "nyangkut").
+// Nilai disimpan saat selesai mengetik (keluar dari kolom / tekan Enter), bukan tiap ketukan.
+const OpsNumberField: React.FC<{
+  value: number;
+  min?: number;
+  onCommit: (n: number) => void;
+  className?: string;
+  placeholder?: string;
+}> = ({ value, min = 0, onCommit, className, placeholder }) => {
+  const [draft, setDraft] = useState<string>(String(value));
+  const [focused, setFocused] = useState(false);
+
+  useEffect(() => {
+    if (!focused) setDraft(String(value));
+  }, [value, focused]);
+
+  const commit = () => {
+    const t = draft.trim();
+    if (t === '' && min > 0) {
+      setDraft(String(value)); // kolom wajib minimal 1: kosong = batal, kembalikan nilai lama
+      return;
+    }
+    const n = Math.max(min, parseInt(t, 10) || 0);
+    setDraft(String(n));
+    if (n !== value) onCommit(n);
+  };
+
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      pattern="[0-9]*"
+      value={draft}
+      placeholder={placeholder}
+      onFocus={(e) => { setFocused(true); e.target.select(); }}
+      onChange={(e) => setDraft(e.target.value.replace(/[^0-9]/g, ''))}
+      onBlur={() => { setFocused(false); commit(); }}
+      onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+      className={className}
+    />
+  );
+};
 
 export const TkuInputView: React.FC<TkuInputViewProps> = ({
   state,
@@ -72,7 +117,6 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
   onUpdateBreakdownDay,
   onBatchUpdateBreakdown,
   showToast,
-  onSelectTku,
   onSwitchToAdmin
 }) => {
   // Separated Sub-Menus:
@@ -115,19 +159,32 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
     frek: 0
   };
 
-  // Form states for Input Penjualan Hari Ini
-  const [salesV, setSalesV] = useState<[number, number, number, number]>(existingInput.v);
-  const [bbV, setBbV] = useState<[number, number, number, number]>(existingInput.b);
-  const [pdmV, setPdmV] = useState<[number, number, number, number]>(
-    existingInput.pdmV || (existingInput.pdm ? [existingInput.pdm, 0, 0, 0] : [0, 0, 0, 0])
-  );
-  const [yl, setYl] = useState<number>(existingInput.yl || tku.jumlahYl || 10);
-  const [ar, setAr] = useState<number>(existingInput.ar || tku.jumlahArea || 10);
-  const [l250, setL250] = useState<number>(existingInput.l250 ?? tku.l250 ?? 0);
-  const [l300, setL300] = useState<number>(existingInput.l300 ?? tku.l300 ?? 0);
-  const [jwpCustom, setJwpCustom] = useState<number>(existingInput.jwpm || (existingInput.yl || tku.jumlahYl || 10) * day);
-  const [absen, setAbsen] = useState<number>(existingInput.absen || 0);
-  const [frek, setFrek] = useState<number>(existingInput.frek || 0);
+  // Tanggal input: default = tanggal update (hari ini), bisa dipilih mundur untuk mengisi tanggal yang terlewat
+  const [inputDate, setInputDate] = useState<string>(state.activeDate);
+  useEffect(() => {
+    setInputDate(state.activeDate);
+  }, [state.activeDate]);
+  useEffect(() => {
+    // Keluar dari menu Input: kembalikan ke tanggal update supaya menu lain tidak ikut membaca tanggal lama
+    if (activeSubMenu !== 'input') setInputDate(state.activeDate);
+  }, [activeSubMenu]);
+  const isBackdate = inputDate !== state.activeDate;
+  const inputDay = Number(inputDate.slice(8, 10)) || day;
+  const minInputDate = `${period.key}-01`;
+  const maxInputDate = state.activeDate;
+  const backdateExisting = isBackdate ? state.pjd[inputDate]?.[tkuIdx] : null;
+
+  // Form states for Input Penjualan: inisialisasi awal bersih [0,0,0,0]
+  const [salesV, setSalesV] = useState<[number, number, number, number]>([0, 0, 0, 0]);
+  const [bbV, setBbV] = useState<[number, number, number, number]>([0, 0, 0, 0]);
+  const [pdmV, setPdmV] = useState<[number, number, number, number]>([0, 0, 0, 0]);
+  const [yl, setYl] = useState<number>(tku.jumlahYl || 10);
+  const [ar, setAr] = useState<number>(tku.jumlahArea || 10);
+  const [l250, setL250] = useState<number>(tku.l250 ?? 0);
+  const [l300, setL300] = useState<number>(tku.l300 ?? 0);
+  const [jwpCustom, setJwpCustom] = useState<number>((tku.jumlahYl || 10) * day);
+  const [absen, setAbsen] = useState<number>(0);
+  const [frek, setFrek] = useState<number>(0);
 
   // Breakdown Sub-Menu States
   const [selectedBreakdownPeriod, setSelectedBreakdownPeriod] = useState<'M1' | 'M2' | 'M3' | 'M4' | 'M5' | 'ALL'>('M1');
@@ -136,7 +193,8 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
   const [selectedRealisasiPeriod, setSelectedRealisasiPeriod] = useState<'M1' | 'M2' | 'M3' | 'M4' | 'M5' | 'ALL'>('M1');
   const [inlineEditDay, setInlineEditDay] = useState<number | null>(null);
   const [inlineEditV, setInlineEditV] = useState<[number, number, number, number]>([0, 0, 0, 0]);
-  const [inlineEditBb, setInlineEditBb] = useState<number>(0);
+  const [inlineEditBbV, setInlineEditBbV] = useState<[number, number, number, number]>([0, 0, 0, 0]);
+  const [inlineEditPdmV, setInlineEditPdmV] = useState<[number, number, number, number]>([0, 0, 0, 0]);
   const [inlineEditAbsen, setInlineEditAbsen] = useState<number>(0);
   const [inlineEditFrek, setInlineEditFrek] = useState<number>(0);
   const [inlineEditL250, setInlineEditL250] = useState<number>(0);
@@ -156,33 +214,82 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
     y?: number;
   } | null>(null);
 
-  // Sync state if active TKU changes
+  // Sync form jika TKU aktif / tanggal input berubah
   useEffect(() => {
-    const input = state.todayInputs[tkuIdx];
-    if (input) {
-      setSalesV(input.v);
-      setBbV(input.b);
-      setPdmV(input.pdmV || (input.pdm ? [input.pdm, 0, 0, 0] : [0, 0, 0, 0]));
-      setYl(input.yl || tku.jumlahYl || 10);
-      setAr(input.ar || tku.jumlahArea || 10);
-      setL250(input.l250 ?? tku.l250 ?? 0);
-      setL300(input.l300 ?? tku.l300 ?? 0);
-      setJwpCustom(input.jwpm || (input.yl || tku.jumlahYl || 10) * day);
-      setAbsen(input.absen || 0);
-      setFrek(input.frek || 0);
-    } else {
-      setSalesV([0, 0, 0, 0]);
-      setBbV([0, 0, 0, 0]);
-      setPdmV([0, 0, 0, 0]);
-      setYl(tku.jumlahYl || 10);
-      setAr(tku.jumlahArea || 10);
-      setL250(tku.l250 ?? 0);
-      setL300(tku.l300 ?? 0);
-      setJwpCustom((tku.jumlahYl || 10) * day);
-      setAbsen(0);
-      setFrek(0);
+    let input: DailySalesRecord | null | undefined;
+    // Periksa apakah tanggal ini sudah pernah disimpan di database pjd atau todayInputs
+    input = state.pjd[inputDate]?.[tkuIdx] || (inputDate === state.activeDate ? state.todayInputs[tkuIdx] : undefined);
+    if (!input && period.key === SEED_PERIOD) {
+      // Tanggal belum pernah direvisi khusus bulan data resmi: pakai angka dasar spreadsheet
+      const seed = (REAL_TKU_DAILY_SALES[tkuIdx] || []).find(item => item.d === inputDay);
+      if (seed) {
+        input = {
+          v: seed.v,
+          b: [0, 0, 0, 0],
+          sold: seed.sold,
+          bb: 0
+        };
+      }
     }
-  }, [tkuIdx, state.todayInputs, tku]);
+
+    // Cek apakah ada draf ketikan yang belum sempat disimpan untuk tanggal dan TKU ini
+    const draft = loadTkuInputDraft(inputDate, tkuIdx);
+
+    // Tentukan apakah draf vs data resmi/seed yang memiliki angka penjualan nyata (> 0)
+    const draftHasSales = Boolean(draft && Array.isArray(draft.v) && draft.v.some(x => x > 0));
+    const inputHasSales = Boolean(input && Array.isArray(input.v) && input.v.some(x => x > 0));
+
+    // Jika draf bernilai 0 (kosong) tetapi data resmi/seed memiliki data penjualan nyata,
+    // MAKA DATA RESMI / SEED HARUS DIUTAMAKAN agar form tidak menjadi kosong!
+    const finalSalesV: [number, number, number, number] = draftHasSales
+      ? draft!.v
+      : (inputHasSales ? input!.v : (draft?.v || [0, 0, 0, 0]));
+
+    const draftHasBb = Boolean(draft && Array.isArray(draft.b) && draft.b.some(x => x > 0));
+    const inputHasBb = Boolean(input && Array.isArray(input.b) && input.b.some(x => x > 0));
+    const finalBbV: [number, number, number, number] = draftHasBb
+      ? draft!.b
+      : (inputHasBb ? input!.b : (draft?.b || [0, 0, 0, 0]));
+
+    const draftHasPdm = Boolean(draft && Array.isArray(draft.pdmV) && draft.pdmV.some(x => x > 0));
+    const inputHasPdm = Boolean(input && ((Array.isArray(input?.pdmV) && input.pdmV.some(x => x > 0)) || Boolean(input?.pdm && input.pdm > 0)));
+    const finalPdmV: [number, number, number, number] = draftHasPdm
+      ? draft!.pdmV
+      : (inputHasPdm ? (input!.pdmV || [input!.pdm || 0, 0, 0, 0]) : (draft?.pdmV || [0, 0, 0, 0]));
+
+    setSalesV(finalSalesV);
+    setBbV(finalBbV);
+    setPdmV(finalPdmV);
+
+    setYl(draft?.yl ?? input?.yl ?? tku.jumlahYl ?? 10);
+    setAr(draft?.ar ?? input?.ar ?? tku.jumlahArea ?? 10);
+    setL250(input?.l250 ?? draft?.l250 ?? tku.l250 ?? 0);
+    setL300(input?.l300 ?? draft?.l300 ?? tku.l300 ?? 0);
+    setJwpCustom(draft?.jwpCustom ?? input?.jwpm ?? (tku.jumlahYl || 10) * inputDay);
+    setAbsen(input?.absen ?? draft?.absen ?? tku.absenYl ?? 0);
+    setFrek(input?.frek ?? draft?.frek ?? tku.frekuensiAbsen ?? 0);
+  }, [tkuIdx, state.pjd, state.todayInputs, inputDate, tku]);
+
+  // Otomatis simpan draft ketikan ke memori perangkat agar aman jika halaman ter-refresh
+  const lastAutosaveKeyRef = useRef<string>('');
+  useEffect(() => {
+    // Saat TKU/tanggal baru saja diganti, state form masih berisi data TKU/tanggal sebelumnya
+    // (belum sempat dimuat ulang). Jangan simpan/hapus draf dulu agar data tidak tertukar atau hilang.
+    const curKey = `${inputDate}_${tkuIdx}`;
+    if (lastAutosaveKeyRef.current !== curKey) {
+      lastAutosaveKeyRef.current = curKey;
+      return;
+    }
+    saveTkuInputDraft(inputDate, tkuIdx, salesV, bbV, pdmV, {
+      yl,
+      ar,
+      l250,
+      l300,
+      jwpCustom,
+      absen,
+      frek
+    });
+  }, [inputDate, tkuIdx, salesV, bbV, pdmV, yl, ar, l250, l300, jwpCustom, absen, frek]);
 
   // Real-time calculations for Input Penjualan
   const totalSoldToday = salesV.reduce((a, b) => a + b, 0);
@@ -200,7 +307,7 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
   const diffVsTarget = tkuDailyAvg - tkuTarget;
   const syl = effectiveJwp > 0 ? tkuAkmTotal / effectiveJwp : null;
 
-  // Handle Save Input Penjualan Hari Ini
+  // Handle Save Input Penjualan Hari Ini (Data tetap muncul dan tidak hilang dari form setelah disimpan)
   const handleSave = () => {
     const record: DailySalesRecord = {
       v: salesV,
@@ -209,15 +316,36 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
       bb: totalBbToday,
       pdmV: pdmV,
       pdm: totalPdmToday,
-      yl,
-      ar,
+      yl: tku.jumlahYl || 10,
+      ar: tku.jumlahArea || 10,
       l250,
       l300,
       jwpm: jwpCustom,
-      jwp: effectiveJwp,
+      jwp: (tku.jumlahYl || 10) * inputDay,
       absen,
       frek
     };
+
+    // Pastikan draf lokal juga menyimpan data terkini yang disimpan agar form tetap terisi
+    saveTkuInputDraft(inputDate, tkuIdx, salesV, bbV, pdmV, {
+      yl: tku.jumlahYl || 10,
+      ar: tku.jumlahArea || 10,
+      l250,
+      l300,
+      jwpCustom,
+      absen,
+      frek
+    });
+
+    if (isBackdate) {
+      if (inputDate < minInputDate || inputDate > maxInputDate) {
+        showToast('Tanggal di luar rentang bulan kerja / melewati tanggal update.', 'error');
+        return;
+      }
+      onReviseDailyData(inputDate, tkuIdx, record);
+      showToast(`Penjualan ${tku.nama} tanggal ${formatDateIndo(inputDate)} berhasil disimpan!`, 'success');
+      return;
+    }
 
     onSaveTkuInput(tkuIdx, record);
 
@@ -233,21 +361,11 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
       }
     }
 
-    showToast(`Penjualan ${tku.nama} hari ini berhasil disimpan!`, 'success');
+    showToast(`Penjualan ${tku.nama} tanggal ${formatDateIndo(inputDate)} berhasil disimpan!`, 'success');
   };
 
-  // Helper: Retrieve actual daily sales for a specific date and variant
+  // Helper: Retrieve actual daily sales for a specific date and variant (hanya membaca data yang sudah tersimpan di pjd)
   const getActualSalesForDay = (d: number, variant: 'ALL' | VariantCode): number => {
-    if (d === day && state.todayInputs[tkuIdx]) {
-      const inp = state.todayInputs[tkuIdx];
-      if (variant === 'ALL') {
-        const sum = (inp.v[0] || 0) + (inp.v[1] || 0) + (inp.v[2] || 0) + (inp.v[3] || 0);
-        if (sum > 0) return sum;
-      } else {
-        const vIdx = VARIANTS.findIndex(v => v.code === variant);
-        if ((inp.v[vIdx] || 0) > 0) return inp.v[vIdx];
-      }
-    }
     const dStr = `${period.key}-${String(d).padStart(2, '0')}`;
     const pjdRec = state.pjd[dStr]?.[tkuIdx];
     if (pjdRec) {
@@ -478,7 +596,7 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
   };
 
   const handleCopyAllRealisasi = () => {
-    const lines = ['Tanggal\tHari\tYO\tOM\tOS\tYT\tTotal Realisasi\tAkumulasi\tRata-rata/hr\tvs Target\tvs LM\tvs LY\tBB\t% BB\tPDM\tAbsen\tFrek\tJWP\ts/YL'];
+    const lines = ['Tanggal\tHari\tYO\tOM\tOS\tYT\tTotal Realisasi\tAkumulasi\tRata-rata/hr\tvs Target\tvs LM\tvs LY\tBB YO\tBB OM\tBB OS\tBB YT\tTotal BB\t% BB\tPDM YO\tPDM OM\tPDM OS\tPDM YT\tTotal PDM\tAbsen\tFrek\tJWP\ts/YL'];
     for (let d = 1; d <= DIM; d++) {
       const dateObj = new Date(PY, PM0, d);
       const dayName = dateObj.toLocaleDateString('id-ID', { weekday: 'short' });
@@ -491,18 +609,16 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
       const vsLy = tyHarian > 0 ? ((avgDaily / tyHarian) * 100).toFixed(1) + '%' : '-';
       const pctBbStr = (opsD.pctBb * 100).toFixed(1) + '%';
       const sylStr = opsD.sylDay !== null ? String(opsD.sylDay) : '—';
-      lines.push(`${d}\t${dayName}\t${r.yo}\t${r.om}\t${r.os}\t${r.yt}\t${r.total}\t${cum.cumTotal}\t${avgDaily}\t${vsTg}\t${vsLm}\t${vsLy}\t${opsD.bb}\t${pctBbStr}\t${opsD.pdm}\t${opsD.absen}\t${opsD.frek}\t${opsD.cumJwp}\t${sylStr}`);
+      lines.push(`${d}\t${dayName}\t${r.yo}\t${r.om}\t${r.os}\t${r.yt}\t${r.total}\t${cum.cumTotal}\t${avgDaily}\t${vsTg}\t${vsLm}\t${vsLy}\t${opsD.bbV[0]}\t${opsD.bbV[1]}\t${opsD.bbV[2]}\t${opsD.bbV[3]}\t${opsD.bb}\t${pctBbStr}\t${opsD.pdmV[0]}\t${opsD.pdmV[1]}\t${opsD.pdmV[2]}\t${opsD.pdmV[3]}\t${opsD.pdm}\t${opsD.absen}\t${opsD.frek}\t${opsD.cumJwp}\t${sylStr}`);
     }
     const tsv = lines.join('\n');
     navigator.clipboard.writeText(tsv).then(() => {
-      showToast('Tabel realisasi penjualan lengkap dengan BB, PDM, JWP, dan s/YL berhasil disalin ke clipboard', 'success');
+      showToast('Tabel realisasi penjualan lengkap dengan varian BB, PDM, JWP, dan s/YL berhasil disalin ke clipboard', 'success');
     }).catch(() => {
       showToast('Gagal menyalin ke clipboard', 'error');
     });
   };
 
-  // ---- Revisi data harian ----
-  
   // ---- Inline Row Editing untuk Realisasi TKU ----
   const handleStartInlineEdit = (d: number) => {
     const rec = getStoredRecord(d);
@@ -510,7 +626,8 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
     const opsD = getDailyOpsDetail(d);
 
     const v: [number, number, number, number] = rec?.v ? [...rec.v] : [actualV.yo, actualV.om, actualV.os, actualV.yt];
-    const bb = rec?.bb ?? opsD.bb;
+    const b: [number, number, number, number] = rec?.b ? [...rec.b] : [...opsD.bbV];
+    const pdmArr: [number, number, number, number] = rec?.pdmV ? [...rec.pdmV] : [...opsD.pdmV];
     const absen = rec?.absen ?? opsD.absen;
     const frek = rec?.frek ?? opsD.frek;
     const l250Val = rec?.l250 ?? tku.l250 ?? 0;
@@ -518,7 +635,8 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
 
     setInlineEditDay(d);
     setInlineEditV(v);
-    setInlineEditBb(bb);
+    setInlineEditBbV(b);
+    setInlineEditPdmV(pdmArr);
     setInlineEditAbsen(absen);
     setInlineEditFrek(frek);
     setInlineEditL250(l250Val);
@@ -532,10 +650,11 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
   const handleSaveInlineEdit = (d: number) => {
     const base = getStoredRecord(d);
     const v = inlineEditV.map(x => Math.max(0, Number(x) || 0)) as [number, number, number, number];
-    const bbNum = Math.max(0, Number(inlineEditBb) || 0);
+    const b = inlineEditBbV.map(x => Math.max(0, Number(x) || 0)) as [number, number, number, number];
+    const pdmV = inlineEditPdmV.map(x => Math.max(0, Number(x) || 0)) as [number, number, number, number];
     const soldTotal = v.reduce((a, c) => a + c, 0);
-    const b: [number, number, number, number] = [bbNum, 0, 0, 0];
-    const pdmV: [number, number, number, number] = [v[0] + b[0], v[1], v[2], v[3]];
+    const bbNum = b.reduce((a, c) => a + c, 0);
+    const pdmNum = pdmV.reduce((a, c) => a + c, 0);
 
     const record: DailySalesRecord = {
       yl: tku.jumlahYl || 10,
@@ -549,7 +668,7 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
       sold: soldTotal,
       bb: bbNum,
       pdmV,
-      pdm: soldTotal + bbNum,
+      pdm: pdmNum,
       absen: Math.max(0, Number(inlineEditAbsen) || 0),
       frek: Math.max(0, Number(inlineEditFrek) || 0)
     };
@@ -613,61 +732,66 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
   // Accumulated Ops: Akm BB & Akm PDM up to current active day/cutoff (terupdate)
   const akmOps = useMemo(() => {
     let bbSum = 0;
-    let absenSum = 0;
-    let frekSum = 0;
+    const baseTku = state.tkus[tkuIdx];
+    let latestAbsenVal = baseTku?.absenYl ?? 0;
+    let latestFrekVal = baseTku?.frekuensiAbsen ?? 0;
     for (let d = 1; d <= day; d++) {
       const dStr = `${period.key}-${String(d).padStart(2, "0")}`;
       const pjdRec = state.pjd[dStr]?.[tkuIdx];
       if (pjdRec) {
         bbSum += pjdRec.bb || 0;
-        absenSum += pjdRec.absen || 0;
-        frekSum += pjdRec.frek || 0;
+        if (pjdRec.absen !== undefined) latestAbsenVal = Number(pjdRec.absen) || 0;
+        if (pjdRec.frek !== undefined) latestFrekVal = Number(pjdRec.frek) || 0;
       } else if (d === day && state.todayInputs[tkuIdx]) {
         const todayRec = state.todayInputs[tkuIdx];
         bbSum += todayRec.bb || 0;
-        absenSum += todayRec.absen || 0;
-        frekSum += todayRec.frek || 0;
+        if (todayRec.absen !== undefined) latestAbsenVal = Number(todayRec.absen) || 0;
+        if (todayRec.frek !== undefined) latestFrekVal = Number(todayRec.frek) || 0;
       } else {
         const ops = getDailyOpsForDay(d);
         bbSum += ops.bb;
       }
     }
     const currentTku = state.tkus[tkuIdx];
-    const baseBb = currentTku?.bbAkm ? currentTku.bbAkm.reduce((a, b) => a + b, 0) : 0;
+    const isSeed = period.key === SEED_PERIOD;
+    const baseBb = (isSeed && currentTku?.bbAkm) ? currentTku.bbAkm.reduce((a, b) => a + (Number(b) || 0), 0) : 0;
     const finalBb = Math.max(bbSum, baseBb);
-    const finalAbsen = Math.max(absenSum, currentTku?.absenYl || 0);
-    const finalFrek = Math.max(frekSum, currentTku?.frekuensiAbsen || 0);
+    const finalAbsen = latestAbsenVal;
+    const finalFrek = latestFrekVal;
     // Akm PDM = Penjualan Akm + BB Akm (input PDM harian hanya tampil di Laporan Harian)
     return { akmBb: finalBb, akmPdm: tkuAkmTotal + finalBb, akmAbsen: finalAbsen, akmFrek: finalFrek };
-  }, [day, state.pjd, state.todayInputs, tkuIdx, tkuAkmTotal, state.tkus]);
+  }, [day, state.pjd, state.todayInputs, tkuIdx, tkuAkmTotal, state.tkus, period.key]);
 
   const akmBbRatio = (tkuAkmTotal + akmOps.akmBb) > 0 ? (akmOps.akmBb / (tkuAkmTotal + akmOps.akmBb)) : 0;
 
   // Operasional akumulatif per TKU untuk benchmark komparasi Rayon & Cabang
   const opsByTku = useMemo(() => {
+    const isSeed = period.key === SEED_PERIOD;
     const map: Record<number, { bb: number; pdm: number; absen: number; frek: number; jwp: number; yl: number; area: number }> = {};
     state.tkus.forEach((t, idx) => {
       const o = { bb: 0, pdm: 0, absen: 0, frek: 0, jwp: 0, yl: t.jumlahYl || 0, area: t.jumlahArea || 0 };
       let last: DailySalesRecord | null = null;
+      let seenAbsen = false;
+      let seenFrek = false;
       for (let d = 1; d <= Math.min(day, DIM); d++) {
         const dStr = `${period.key}-${String(d).padStart(2, '0')}`;
         const rec = state.pjd[dStr]?.[idx] || (dStr === state.activeDate ? state.todayInputs[idx] : null);
         if (!rec) continue;
         o.bb += rec.bb || 0;
         o.pdm += rec.pdm || (rec.pdmV ? rec.pdmV.reduce((a, b) => a + b, 0) : 0);
-        o.absen += rec.absen || 0;
-        o.frek += rec.frek || 0;
+        if (rec.absen !== undefined) { o.absen = Number(rec.absen) || 0; seenAbsen = true; }
+        if (rec.frek !== undefined) { o.frek = Number(rec.frek) || 0; seenFrek = true; }
         last = rec;
       }
       if (last) {
         if (last.yl) o.yl = last.yl;
         if (last.ar) o.area = last.ar;
       }
-      const baseBb = t.bbAkm ? t.bbAkm.reduce((a, b) => a + b, 0) : 0;
+      const baseBb = (isSeed && t.bbAkm) ? t.bbAkm.reduce((a, b) => a + (Number(b) || 0), 0) : 0;
       o.bb = Math.max(o.bb, baseBb);
-      o.absen = Math.max(o.absen, t.absenYl || 0);
-      o.frek = Math.max(o.frek, t.frekuensiAbsen || 0);
-      o.jwp = last?.jwp || (t.akmJwp || (o.yl * day));
+      if (!seenAbsen) o.absen = t.absenYl || 0;
+      if (!seenFrek) o.frek = t.frekuensiAbsen || 0;
+      o.jwp = last?.jwp || (isSeed ? (t.akmJwp || (o.yl * day)) : (o.yl * day));
       if (!t.aktif) { o.bb = 0; o.pdm = 0; o.absen = 0; o.frek = 0; o.jwp = 0; o.yl = 0; o.area = 0; }
       map[idx] = o;
     });
@@ -713,9 +837,68 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
     const isPast = d <= day;
 
     const sold = isPast ? getActualSalesForDay(d, "ALL") : 0;
-    const bb = isPast ? (rec?.bb ?? getDailyOpsForDay(d).bb) : 0;
+    const bbV: [number, number, number, number] = isPast
+      ? (rec?.b ? [...rec.b] : [0, 0, 0, 0])
+      : [0, 0, 0, 0];
+    const bb = isPast ? (rec?.bb ?? (bbV.reduce((a, b) => a + b, 0) || getDailyOpsForDay(d).bb)) : 0;
     const pctBb = (sold + bb) > 0 ? bb / (sold + bb) : 0;
-    const pdm = isPast ? (sold + bb) : 0;
+
+    // PDM per TKU di menu Realisasi (per varian dan total):
+    // PDM hari transaksi d adalah pasokan botol untuk hari transaksi berikutnya (Penjualan next + BB next).
+    // Jika hari berikutnya libur/tidak ada transaksi (misal Minggu), maka transaksi hari Senin PDM-nya mundur ke Sabtu.
+    // Jika tanggal d bukan hari transaksi aktif (misal Minggu libur), PDM adalah 0.
+    // Jika tanggal d adalah hari terakhir dengan data (belum ada data transaksi esoknya), menggunakan manual input PDM hari ini.
+    let pdmV: [number, number, number, number] = [0, 0, 0, 0];
+    let pdm = 0;
+    if (isPast) {
+      const isSun = new Date(PY, PM0, d).getDay() === 0;
+      const hasTransactionToday = sold > 0 || (!isSun && d <= day);
+
+      if (hasTransactionToday) {
+        // Cari hari transaksi berikutnya yang sudah tercatat
+        let nextD = -1;
+        for (let step = d + 1; step <= Math.min(day, DIM); step++) {
+          const nextIsSun = new Date(PY, PM0, step).getDay() === 0;
+          const nextSold = getActualSalesForDay(step, "ALL");
+          if (nextSold > 0 || (!nextIsSun && step <= day)) {
+            nextD = step;
+            break;
+          }
+        }
+
+        if (nextD > 0) {
+          const nextDStr = `${period.key}-${String(nextD).padStart(2, "0")}`;
+          const nextPjdRec = state.pjd[nextDStr]?.[tkuIdx];
+          const nextTodayRec = nextD === day ? state.todayInputs[tkuIdx] : null;
+          const nextRec = nextPjdRec || nextTodayRec;
+          const nextActual = getDayActualAllVariants(nextD);
+          const nextSalesV: [number, number, number, number] = nextRec?.v ? nextRec.v : [nextActual.yo, nextActual.om, nextActual.os, nextActual.yt];
+          const nextBbV: [number, number, number, number] = nextRec?.b ? nextRec.b : [0, 0, 0, 0];
+          pdmV = [
+            nextSalesV[0] + nextBbV[0],
+            nextSalesV[1] + nextBbV[1],
+            nextSalesV[2] + nextBbV[2],
+            nextSalesV[3] + nextBbV[3]
+          ];
+          pdm = pdmV.reduce((a, b) => a + b, 0);
+        } else {
+          // Hari terakhir (hari ini / belum ada transaksi esoknya): gunakan manual input PDM hari ini
+          if (rec?.pdmV) {
+            pdmV = [...rec.pdmV];
+          } else if (d === day && pdmV) {
+            pdmV = [...pdmV];
+          } else {
+            const manualPdm = rec?.pdm ?? (d === day ? totalPdmToday : 0);
+            pdmV = [manualPdm, 0, 0, 0];
+          }
+          pdm = pdmV.reduce((a, b) => a + b, 0);
+        }
+      } else {
+        pdmV = [0, 0, 0, 0];
+        pdm = 0;
+      }
+    }
+
     const absen = isPast ? (rec?.absen ?? 0) : 0;
     const frek = isPast ? (rec?.frek ?? 0) : 0;
 
@@ -733,8 +916,8 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
         const sStr = `${period.key}-${String(i).padStart(2, "0")}`;
         const r = state.pjd[sStr]?.[tkuIdx] || (i === day ? state.todayInputs[tkuIdx] : null);
         cumBb += r?.bb ?? getDailyOpsForDay(i).bb;
-        cumAbsen += r?.absen ?? 0;
-        cumFrek += r?.frek ?? 0;
+        if (r?.absen !== undefined) cumAbsen = Number(r.absen) || 0;
+        if (r?.frek !== undefined) cumFrek = Number(r.frek) || 0;
       }
     }
 
@@ -744,8 +927,10 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
 
     return {
       sold,
+      bbV,
       bb,
       pctBb,
+      pdmV,
       pdm,
       absen,
       frek,
@@ -866,18 +1051,813 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
     return arr;
   }, [day, tkuIdx, targetHarian, blHarian, tyHarian, state.pjd, state.todayInputs, activeYear, activeMonth]);
 
+  // Parameter Operasional Master Chips (Dipindah dari menu Realisasi ke menu Input Penjualan Harian setelah PDM)
+  // Parameter Operasional Master Chips (Dipindah dari menu Realisasi ke menu Input Penjualan Harian setelah PDM)
+  // Jml YL & Area hanya tampilan (diedit di Profil TKU). JWP otomatis mengikuti tanggal yang dipilih.
+  // Absen, Freq, <250, <300 bersifat memperbarui (overwrite/update langsung saat diubah, bukan akumulasi).
+  const todayRec = state.todayInputs[tkuIdx];
+  const cYl = tku.jumlahYl || 10;
+  const cAr = tku.jumlahArea || 10;
+  const chipRec = state.pjd[state.activeDate]?.[tkuIdx] || todayRec;
+  const cL250 = chipRec?.l250 ?? tku.l250 ?? 0;
+  const cL300 = chipRec?.l300 ?? tku.l300 ?? 0;
+  const cAbsen = chipRec?.absen ?? tku.absenYl ?? 0;
+  const cFrek = chipRec?.frek ?? tku.frekuensiAbsen ?? 0;
+  const autoJwp = cYl * day;
+
+  const commitChip = (patch: Partial<DailySalesRecord>) => {
+    if (patch.frek !== undefined) setFrek(patch.frek);
+    if (patch.absen !== undefined) setAbsen(patch.absen);
+    if (patch.l250 !== undefined) setL250(patch.l250);
+    if (patch.l300 !== undefined) setL300(patch.l300);
+
+    const savedToday = state.pjd[state.activeDate]?.[tkuIdx];
+    const base: DailySalesRecord = savedToday || todayRec || {
+      v: [0, 0, 0, 0], b: [0, 0, 0, 0], sold: 0, bb: 0, pdmV: [0, 0, 0, 0], pdm: 0
+    };
+    const rec: DailySalesRecord = {
+      ...base,
+      yl: cYl,
+      ar: cAr,
+      l250: patch.l250 !== undefined ? patch.l250 : cL250,
+      l300: patch.l300 !== undefined ? patch.l300 : cL300,
+      absen: patch.absen !== undefined ? patch.absen : cAbsen,
+      frek: patch.frek !== undefined ? patch.frek : cFrek,
+      jwp: autoJwp,
+      jwpm: autoJwp,
+      ...patch
+    };
+    saveTkuInputDraft(inputDate, tkuIdx, salesV, bbV, pdmV, {
+      yl: cYl,
+      ar: cAr,
+      l250: patch.l250 !== undefined ? patch.l250 : cL250,
+      l300: patch.l300 !== undefined ? patch.l300 : cL300,
+      jwpCustom,
+      absen: patch.absen !== undefined ? patch.absen : cAbsen,
+      frek: patch.frek !== undefined ? patch.frek : cFrek
+    });
+    onSaveTkuInput(tkuIdx, rec);
+  };
+
+  // Card Kondisi & Parameter Operasional (Dipindah dari menu Realisasi ke menu Input Penjualan Harian setelah PDM)
+  // Berfungsi otomatis dan tidak ikut simpan harian
+  const renderOpsCard = () => (
+    <div className="p-4 md:p-5 bg-white dark:bg-neutral-900 rounded-2xl border border-neutral-200 dark:border-neutral-800 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="space-y-0.5">
+        <h2 className="text-base font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
+          <SlidersHorizontal className="w-5 h-5 text-emerald-600" />
+          Kondisi TKU
+        </h2>
+      </div>
+      
+      {/* Bar Parameter Operasional */}
+      <div className="flex flex-wrap items-center gap-2 pt-2 lg:pt-0 border-t lg:border-t-0 border-neutral-100 dark:border-neutral-800">
+        {/* 1. Jml YL (Tampilan Saja) */}
+        <div className="px-2.5 py-1 rounded-xl border flex items-center gap-1.5 text-xs bg-neutral-50 dark:bg-neutral-800 border-neutral-200/60 dark:border-neutral-700" title="Jumlah YL (diatur di menu Profil TKU)">
+          <span className="text-neutral-500 font-medium">Jml YL:</span>
+          <span className="font-mono font-bold text-neutral-900 dark:text-neutral-100">{cYl}</span>
+        </div>
+
+        {/* 2. Area (Tampilan Saja) */}
+        <div className="px-2.5 py-1 rounded-xl border flex items-center gap-1.5 text-xs bg-neutral-50 dark:bg-neutral-800 border-neutral-200/60 dark:border-neutral-700" title="Jumlah Area (diatur di menu Profil TKU)">
+          <span className="text-neutral-500 font-medium">Area:</span>
+          <span className="font-mono font-bold text-neutral-900 dark:text-neutral-100">{cAr}</span>
+        </div>
+
+        {/* 3. JWP (Otomatis Mengikuti Tanggal: YL × Tgl) */}
+        <div className="px-2.5 py-1 rounded-xl border flex items-center gap-1.5 text-xs bg-sky-50/60 dark:bg-sky-950/30 border-sky-200/60 dark:border-sky-900/40" title={`JWP Otomatis = ${cYl} YL × Tgl ${day}`}>
+          <span className="text-sky-700 dark:text-sky-400 font-semibold">JWP:</span>
+          <span className="font-mono font-bold text-sky-700 dark:text-sky-300 px-1">{autoJwp}</span>
+        </div>
+
+        {/* 4. Absen (Memperbarui nilai) */}
+        <div className="px-2.5 py-1 rounded-xl border flex items-center gap-1.5 text-xs bg-purple-50/60 dark:bg-purple-950/30 border-purple-200/60 dark:border-purple-900/40">
+          <span className="text-purple-700 dark:text-purple-400 font-semibold">Absen:</span>
+          <OpsNumberField
+            value={cAbsen}
+            min={0}
+            onCommit={(n) => commitChip({ absen: n })}
+            className="w-14 px-1.5 py-0.5 rounded-lg border font-mono font-bold text-center text-xs bg-white dark:bg-neutral-900 text-purple-700 dark:text-purple-300 border-purple-300 dark:border-purple-700 focus:ring-purple-500"
+          />
+        </div>
+
+        {/* 5. Freq Absen (Memperbarui nilai) */}
+        <div className="px-2.5 py-1 rounded-xl border flex items-center gap-1.5 text-xs bg-indigo-50/60 dark:bg-indigo-950/30 border-indigo-200/60 dark:border-indigo-900/40">
+          <span className="text-indigo-700 dark:text-indigo-400 font-semibold">Freq:</span>
+          <OpsNumberField
+            value={cFrek}
+            min={0}
+            onCommit={(n) => commitChip({ frek: n })}
+            className="w-14 px-1.5 py-0.5 rounded-lg border font-mono font-bold text-center text-xs bg-white dark:bg-neutral-900 text-indigo-700 dark:text-indigo-300 border-indigo-300 dark:border-indigo-700 focus:ring-indigo-500"
+          />
+        </div>
+
+        {/* 6. YL < 250 (Memperbarui nilai) */}
+        <div className="px-2.5 py-1 rounded-xl border flex items-center gap-1.5 text-xs bg-red-50/60 dark:bg-red-950/30 border-red-200/60 dark:border-red-900/40">
+          <span className="text-red-700 dark:text-red-400 font-semibold">YL &lt; 250:</span>
+          <OpsNumberField
+            value={cL250}
+            min={0}
+            onCommit={(n) => commitChip({ l250: n })}
+            className="w-14 px-1.5 py-0.5 rounded-lg border font-mono font-bold text-center text-xs bg-white dark:bg-neutral-900 text-red-700 dark:text-red-300 border-red-300 dark:border-red-700 focus:ring-red-500"
+          />
+        </div>
+
+        {/* 7. YL < 300 (Memperbarui nilai) */}
+        <div className="px-2.5 py-1 rounded-xl border flex items-center gap-1.5 text-xs bg-amber-50/60 dark:bg-amber-950/30 border-amber-200/60 dark:border-amber-900/40">
+          <span className="text-amber-700 dark:text-amber-400 font-semibold">YL &lt; 300:</span>
+          <OpsNumberField
+            value={cL300}
+            min={0}
+            onCommit={(n) => commitChip({ l300: n })}
+            className="w-14 px-1.5 py-0.5 rounded-lg border font-mono font-bold text-center text-xs bg-white dark:bg-neutral-900 text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-700 focus:ring-amber-500"
+          />
+        </div>
+      </div>
+    </div>
+  );
+
+  // Render Tabel Realisasi Penjualan & Operasional TKU (Khusus tabel detail di menu Realisasi)
+  const renderRealisasiSection = () => {
+    let periodTotalYo = 0;
+    let periodTotalOm = 0;
+    let periodTotalOs = 0;
+    let periodTotalYt = 0;
+    let periodTotalSold = 0;
+    let periodTotalBbV = [0, 0, 0, 0];
+    let periodTotalBb = 0;
+    let periodTotalPdmV = [0, 0, 0, 0];
+    let periodTotalPdm = 0;
+    let periodTotalAbs = 0;
+    let periodTotalFrk = 0;
+
+    realisasiDaysToShow.forEach(d => {
+      if (d <= day) {
+        const r = getDayActualAllVariants(d);
+        const opsD = getDailyOpsDetail(d);
+        periodTotalYo += r.yo;
+        periodTotalOm += r.om;
+        periodTotalOs += r.os;
+        periodTotalYt += r.yt;
+        periodTotalSold += r.total;
+
+        periodTotalBbV[0] += opsD.bbV[0];
+        periodTotalBbV[1] += opsD.bbV[1];
+        periodTotalBbV[2] += opsD.bbV[2];
+        periodTotalBbV[3] += opsD.bbV[3];
+        periodTotalBb += opsD.bb;
+
+        periodTotalPdmV[0] += opsD.pdmV[0];
+        periodTotalPdmV[1] += opsD.pdmV[1];
+        periodTotalPdmV[2] += opsD.pdmV[2];
+        periodTotalPdmV[3] += opsD.pdmV[3];
+        periodTotalPdm += opsD.pdm;
+
+        if (opsD.absen > 0 || opsD.frek > 0) { periodTotalAbs = opsD.absen; periodTotalFrk = opsD.frek; }
+      }
+    });
+
+    return (
+      <div className="space-y-6 animate-in fade-in duration-200">
+        {/* Tabel Detail Realisasi Harian & Operasional */}
+        <div className="p-6 bg-white dark:bg-neutral-900 rounded-3xl border border-neutral-200 dark:border-neutral-800 shadow-sm space-y-4">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-neutral-100 dark:border-neutral-800">
+            <div>
+              <h3 className="text-base font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
+                <CalendarRange className="w-5 h-5 text-emerald-600" />
+                Realisasi Harian
+              </h3>
+            </div>
+
+            {/* Switcher Minggu & Salin Button */}
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="inline-flex rounded-xl bg-neutral-100 dark:bg-neutral-800 p-1 border border-neutral-200 dark:border-neutral-700 shrink-0">
+                {[
+                  { id: 'M1', label: 'M1' },
+                  { id: 'M2', label: 'M2' },
+                  { id: 'M3', label: 'M3' },
+                  { id: 'M4', label: 'M4' },
+                  { id: 'M5', label: 'M5' },
+                  { id: 'ALL', label: 'Satu Bulan' }
+                ].map(p => (
+                  <button
+                    key={p.id}
+                    onClick={() => {
+                      setSelectedRealisasiPeriod(p.id as any);
+                      setInlineEditDay(null);
+                    }}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${selectedRealisasiPeriod === p.id ? 'bg-white dark:bg-neutral-900 text-neutral-900 dark:text-white shadow-2xs' : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-white'}`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+
+              <button
+                type="button"
+                onClick={handleCopyAllRealisasi}
+                className="px-3 py-2 rounded-xl border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-xs font-semibold text-neutral-700 dark:text-neutral-300 flex items-center gap-1.5 transition-colors cursor-pointer"
+                title="Salin seluruh tabel realisasi ke format Excel/Spreadsheet"
+              >
+                <Copy className="w-3.5 h-3.5 text-neutral-500" />
+                <span>Salin Data</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto max-h-[650px] border border-neutral-200 dark:border-neutral-800 rounded-2xl">
+            <table className="w-full text-xs text-left border-collapse min-w-[1780px]">
+              <thead className="sticky top-0 z-10 bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 font-semibold shadow-2xs">
+                <tr className="border-b border-neutral-200 dark:border-neutral-700">
+                  <th className="py-2.5 px-3">Tanggal</th>
+                  <th className="py-2.5 px-2">Hari</th>
+                  <th className="py-2.5 px-2 text-right" style={{ color: VARIANTS[0].color }}>YO</th>
+                  <th className="py-2.5 px-2 text-right" style={{ color: VARIANTS[1].color }}>OM</th>
+                  <th className="py-2.5 px-2 text-right" style={{ color: VARIANTS[2].color }}>OS</th>
+                  <th className="py-2.5 px-2 text-right" style={{ color: VARIANTS[3].color }}>YT</th>
+                  <th className="py-2.5 px-2.5 text-right font-bold text-neutral-900 dark:text-white">Realisasi Harian</th>
+                  <th className="py-2.5 px-2.5 text-right text-emerald-600 dark:text-emerald-400 font-bold">Akumulasi</th>
+                  <th className="py-2.5 px-2.5 text-right font-bold">Rata-rata/hr</th>
+                  <th className="py-2.5 px-2.5 text-right">vs Tgt</th>
+                  <th className="py-2.5 px-2.5 text-right">vs LM</th>
+                  <th className="py-2.5 px-2.5 text-right">vs LY</th>
+                  
+                  {/* BB per Varian & Total */}
+                  <th className="py-2.5 px-1.5 text-right border-l border-neutral-200 dark:border-neutral-700 text-amber-600 font-bold" title="BB Yakult Original">BB YO</th>
+                  <th className="py-2.5 px-1.5 text-right text-amber-600 font-bold" title="BB Original Mangga">BB OM</th>
+                  <th className="py-2.5 px-1.5 text-right text-amber-600 font-bold" title="BB Original Stroberi">BB OS</th>
+                  <th className="py-2.5 px-1.5 text-right text-amber-600 font-bold" title="BB Yakult Light">BB YT</th>
+                  <th className="py-2.5 px-2 text-right text-amber-700 dark:text-amber-400 font-bold">Total BB</th>
+                  <th className="py-2.5 px-2 text-right text-amber-600">% BB</th>
+                  
+                  {/* PDM per Varian & Total */}
+                  <th className="py-2.5 px-1.5 text-right border-l border-neutral-200 dark:border-neutral-700 text-indigo-600 font-bold" title="PDM Yakult Original">PDM YO</th>
+                  <th className="py-2.5 px-1.5 text-right text-indigo-600 font-bold" title="PDM Original Mangga">PDM OM</th>
+                  <th className="py-2.5 px-1.5 text-right text-indigo-600 font-bold" title="PDM Original Stroberi">PDM OS</th>
+                  <th className="py-2.5 px-1.5 text-right text-indigo-600 font-bold" title="PDM Yakult Light">PDM YT</th>
+                  <th className="py-2.5 px-2.5 text-right text-indigo-700 dark:text-indigo-400 font-bold">Total PDM</th>
+
+                  <th className="py-2.5 px-1.5 text-right border-l border-neutral-200 dark:border-neutral-700">Abs</th>
+                  <th className="py-2.5 px-1.5 text-right">Frk</th>
+                  <th className="py-2.5 px-2 text-right border-l border-neutral-200 dark:border-neutral-700 text-sky-600">JWP</th>
+                  <th className="py-2.5 px-2.5 text-right font-bold text-brand-600">s/YL</th>
+                  <th className="py-2.5 px-2 text-right font-bold text-red-600 border-l border-neutral-200 dark:border-neutral-700">YL &lt; 250</th>
+                  <th className="py-2.5 px-2 text-right font-bold text-amber-600">YL &lt; 300</th>
+                  <th className="py-2.5 px-3 text-center border-l border-neutral-200 dark:border-neutral-700 font-semibold text-neutral-900 dark:text-white">Aksi</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800 font-mono">
+                {realisasiDaysToShow.map(d => {
+                  const dateObj = new Date(PY, PM0, d);
+                  const dayName = dateObj.toLocaleDateString('id-ID', { weekday: 'long' });
+                  const isSun = dateObj.getDay() === 0;
+                  const isToday = d === day;
+                  const isPast = d <= day;
+                  const isEditing = inlineEditDay === d;
+
+                  const r = isPast ? getDayActualAllVariants(d) : { yo: 0, om: 0, os: 0, yt: 0, total: 0 };
+                  const cum = isPast ? getCumActualUpToDay(d) : { cumYo: 0, cumOm: 0, cumOs: 0, cumYt: 0, cumTotal: 0 };
+                  const opsD = getDailyOpsDetail(d);
+
+                  const dayDivider = d;
+                  const avgDaily = (isPast && dayDivider > 0) ? Math.round(cum.cumTotal / dayDivider) : 0;
+
+                  const vsTgPct = (isPast && targetHarian > 0) ? (avgDaily / targetHarian) : 0;
+                  const vsTgDiff = avgDaily - targetHarian;
+
+                  const vsBlPct = (isPast && blHarian > 0) ? (avgDaily / blHarian) : 0;
+                  const vsBlDiff = avgDaily - blHarian;
+
+                  const vsTyPct = (isPast && tyHarian > 0) ? (avgDaily / tyHarian) : 0;
+                  const vsTyDiff = avgDaily - tyHarian;
+
+                  const editTotalSold = inlineEditV[0] + inlineEditV[1] + inlineEditV[2] + inlineEditV[3];
+                  const editTotalBb = inlineEditBbV[0] + inlineEditBbV[1] + inlineEditBbV[2] + inlineEditBbV[3];
+                  const editTotalPdm = inlineEditPdmV[0] + inlineEditPdmV[1] + inlineEditPdmV[2] + inlineEditPdmV[3];
+                  const editPctBb = (editTotalSold + editTotalBb) > 0 ? editTotalBb / (editTotalSold + editTotalBb) : 0;
+
+                  return (
+                    <tr
+                      key={d}
+                      className={`hover:bg-neutral-50/70 dark:hover:bg-neutral-800/40 transition-colors ${isToday ? 'bg-emerald-50/30 dark:bg-emerald-950/20 font-medium' : isSun ? 'bg-amber-50/20 dark:bg-amber-950/10' : ''}`}
+                    >
+                      <td className="py-2 px-3">
+                        <div className="flex items-center gap-1.5 font-bold font-sans">
+                          <span>Tgl {d}</span>
+                          {isToday && (
+                            <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-emerald-600 text-white font-semibold">
+                              Hari Ini
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-2 px-2 font-sans">
+                        <span className={isSun ? 'text-amber-600 font-medium' : 'text-neutral-600 dark:text-neutral-400'}>
+                          {dayName} {isSun ? '(Libur)' : ''}
+                        </span>
+                      </td>
+
+                      {/* YO */}
+                      <td className="py-1.5 px-1.5 text-right font-bold" style={{ color: VARIANTS[0].color }}>
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            min={0}
+                            value={inlineEditV[0] || ''}
+                            placeholder="0"
+                            onChange={(e) => setInlineEditV([Math.max(0, Number(e.target.value)), inlineEditV[1], inlineEditV[2], inlineEditV[3]])}
+                            className="w-16 px-1.5 py-1 text-right rounded-lg border border-red-400 bg-white dark:bg-neutral-900 font-mono font-bold text-xs focus:ring-2 focus:ring-red-500 focus:outline-none shadow-2xs"
+                          />
+                        ) : isPast ? (
+                          formatNumber(r.yo)
+                        ) : (
+                          <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>
+                        )}
+                      </td>
+
+                      {/* OM */}
+                      <td className="py-1.5 px-1.5 text-right font-bold" style={{ color: VARIANTS[1].color }}>
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            min={0}
+                            value={inlineEditV[1] || ''}
+                            placeholder="0"
+                            onChange={(e) => setInlineEditV([inlineEditV[0], Math.max(0, Number(e.target.value)), inlineEditV[2], inlineEditV[3]])}
+                            className="w-16 px-1.5 py-1 text-right rounded-lg border border-sky-400 bg-white dark:bg-neutral-900 font-mono font-bold text-xs focus:ring-2 focus:ring-sky-500 focus:outline-none shadow-2xs"
+                          />
+                        ) : isPast ? (
+                          formatNumber(r.om)
+                        ) : (
+                          <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>
+                        )}
+                      </td>
+
+                      {/* OS */}
+                      <td className="py-1.5 px-1.5 text-right font-bold" style={{ color: VARIANTS[2].color }}>
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            min={0}
+                            value={inlineEditV[2] || ''}
+                            placeholder="0"
+                            onChange={(e) => setInlineEditV([inlineEditV[0], inlineEditV[1], Math.max(0, Number(e.target.value)), inlineEditV[3]])}
+                            className="w-16 px-1.5 py-1 text-right rounded-lg border border-pink-400 bg-white dark:bg-neutral-900 font-mono font-bold text-xs focus:ring-2 focus:ring-pink-500 focus:outline-none shadow-2xs"
+                          />
+                        ) : isPast ? (
+                          formatNumber(r.os)
+                        ) : (
+                          <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>
+                        )}
+                      </td>
+
+                      {/* YT */}
+                      <td className="py-1.5 px-1.5 text-right font-bold" style={{ color: VARIANTS[3].color }}>
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            min={0}
+                            value={inlineEditV[3] || ''}
+                            placeholder="0"
+                            onChange={(e) => setInlineEditV([inlineEditV[0], inlineEditV[1], inlineEditV[2], Math.max(0, Number(e.target.value))])}
+                            className="w-16 px-1.5 py-1 text-right rounded-lg border border-sky-400 bg-white dark:bg-neutral-900 font-mono font-bold text-xs focus:ring-2 focus:ring-sky-500 focus:outline-none shadow-2xs"
+                          />
+                        ) : isPast ? (
+                          formatNumber(r.yt)
+                        ) : (
+                          <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>
+                        )}
+                      </td>
+
+                      {/* Realisasi Harian Total */}
+                      <td className="py-2 px-2.5 text-right font-bold text-neutral-900 dark:text-neutral-100">
+                        {isEditing ? (
+                          <span className="text-emerald-600">{formatNumber(editTotalSold)}</span>
+                        ) : isPast ? (
+                          formatNumber(r.total)
+                        ) : (
+                          <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>
+                        )}
+                      </td>
+
+                      {/* Akumulasi */}
+                      <td className="py-2 px-2.5 text-right font-bold text-emerald-600 dark:text-emerald-400">
+                        {isPast ? formatNumber(cum.cumTotal) : <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>}
+                      </td>
+
+                      {/* Rata-rata / Hari */}
+                      <td className="py-2 px-2.5 text-right font-bold text-neutral-900 dark:text-neutral-100">
+                        {isPast ? formatNumber(avgDaily) : <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>}
+                      </td>
+
+                      {/* vs Target */}
+                      <td className="py-2 px-2.5 text-right font-bold">
+                        {isPast ? (
+                          <>
+                            <span className={vsTgPct >= 1 ? 'text-emerald-600' : 'text-red-600'}>
+                              {formatPercent(vsTgPct)}
+                            </span>
+                            <div className="text-[10px] text-neutral-400 font-normal">
+                              {vsTgDiff >= 0 ? `+${formatNumber(vsTgDiff)}` : formatNumber(vsTgDiff)}
+                            </div>
+                          </>
+                        ) : (
+                          <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>
+                        )}
+                      </td>
+
+                      {/* vs LM */}
+                      <td className="py-2 px-2.5 text-right font-semibold">
+                        {isPast ? (
+                          <>
+                            <span className={vsBlPct >= 1 ? 'text-emerald-600' : 'text-neutral-600 dark:text-neutral-400'}>
+                              {formatPercent(vsBlPct)}
+                            </span>
+                            <div className="text-[10px] text-neutral-400 font-normal">
+                              {vsBlDiff >= 0 ? `+${formatNumber(vsBlDiff)}` : formatNumber(vsBlDiff)}
+                            </div>
+                          </>
+                        ) : (
+                          <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>
+                        )}
+                      </td>
+
+                      {/* vs LY */}
+                      <td className="py-2 px-2.5 text-right font-semibold">
+                        {isPast ? (
+                          <>
+                            <span className={vsTyPct >= 1 ? 'text-emerald-600' : 'text-neutral-600 dark:text-neutral-400'}>
+                              {formatPercent(vsTyPct)}
+                            </span>
+                            <div className="text-[10px] text-neutral-400 font-normal">
+                              {vsTyDiff >= 0 ? `+${formatNumber(vsTyDiff)}` : formatNumber(vsTyDiff)}
+                            </div>
+                          </>
+                        ) : (
+                          <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>
+                        )}
+                      </td>
+
+                      {/* BB YO */}
+                      <td className="py-1.5 px-1.5 text-right font-mono text-amber-600 border-l border-neutral-200 dark:border-neutral-700">
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            min={0}
+                            value={inlineEditBbV[0] || ''}
+                            placeholder="0"
+                            onChange={(e) => setInlineEditBbV([Math.max(0, Number(e.target.value)), inlineEditBbV[1], inlineEditBbV[2], inlineEditBbV[3]])}
+                            className="w-12 px-1 py-1 text-right rounded-lg border border-amber-400 bg-white dark:bg-neutral-900 font-mono text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none shadow-2xs"
+                          />
+                        ) : isPast ? (
+                          formatNumber(opsD.bbV[0])
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+
+                      {/* BB OM */}
+                      <td className="py-1.5 px-1.5 text-right font-mono text-amber-600">
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            min={0}
+                            value={inlineEditBbV[1] || ''}
+                            placeholder="0"
+                            onChange={(e) => setInlineEditBbV([inlineEditBbV[0], Math.max(0, Number(e.target.value)), inlineEditBbV[2], inlineEditBbV[3]])}
+                            className="w-12 px-1 py-1 text-right rounded-lg border border-amber-400 bg-white dark:bg-neutral-900 font-mono text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none shadow-2xs"
+                          />
+                        ) : isPast ? (
+                          formatNumber(opsD.bbV[1])
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+
+                      {/* BB OS */}
+                      <td className="py-1.5 px-1.5 text-right font-mono text-amber-600">
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            min={0}
+                            value={inlineEditBbV[2] || ''}
+                            placeholder="0"
+                            onChange={(e) => setInlineEditBbV([inlineEditBbV[0], inlineEditBbV[1], Math.max(0, Number(e.target.value)), inlineEditBbV[3]])}
+                            className="w-12 px-1 py-1 text-right rounded-lg border border-amber-400 bg-white dark:bg-neutral-900 font-mono text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none shadow-2xs"
+                          />
+                        ) : isPast ? (
+                          formatNumber(opsD.bbV[2])
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+
+                      {/* BB YT */}
+                      <td className="py-1.5 px-1.5 text-right font-mono text-amber-600">
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            min={0}
+                            value={inlineEditBbV[3] || ''}
+                            placeholder="0"
+                            onChange={(e) => setInlineEditBbV([inlineEditBbV[0], inlineEditBbV[1], inlineEditBbV[2], Math.max(0, Number(e.target.value))])}
+                            className="w-12 px-1 py-1 text-right rounded-lg border border-amber-400 bg-white dark:bg-neutral-900 font-mono text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none shadow-2xs"
+                          />
+                        ) : isPast ? (
+                          formatNumber(opsD.bbV[3])
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+
+                      {/* Total BB */}
+                      <td className="py-1.5 px-2 text-right font-bold text-amber-700 dark:text-amber-400">
+                        {isEditing ? (
+                          formatNumber(editTotalBb)
+                        ) : isPast ? (
+                          formatNumber(opsD.bb)
+                        ) : (
+                          <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>
+                        )}
+                      </td>
+
+                      {/* % BB */}
+                      <td className="py-2 px-2 text-right text-amber-600">
+                        {isEditing ? (
+                          formatPercent(editPctBb)
+                        ) : isPast ? (
+                          formatPercent(opsD.pctBb)
+                        ) : (
+                          <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>
+                        )}
+                      </td>
+
+                      {/* PDM YO */}
+                      <td className="py-1.5 px-1.5 text-right font-mono text-indigo-600 border-l border-neutral-200 dark:border-neutral-700">
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            min={0}
+                            value={inlineEditPdmV[0] || ''}
+                            placeholder="0"
+                            onChange={(e) => setInlineEditPdmV([Math.max(0, Number(e.target.value)), inlineEditPdmV[1], inlineEditPdmV[2], inlineEditPdmV[3]])}
+                            className="w-12 px-1 py-1 text-right rounded-lg border border-indigo-400 bg-white dark:bg-neutral-900 font-mono text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none shadow-2xs"
+                          />
+                        ) : isPast ? (
+                          formatNumber(opsD.pdmV[0])
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+
+                      {/* PDM OM */}
+                      <td className="py-1.5 px-1.5 text-right font-mono text-indigo-600">
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            min={0}
+                            value={inlineEditPdmV[1] || ''}
+                            placeholder="0"
+                            onChange={(e) => setInlineEditPdmV([inlineEditPdmV[0], Math.max(0, Number(e.target.value)), inlineEditPdmV[2], inlineEditPdmV[3]])}
+                            className="w-12 px-1 py-1 text-right rounded-lg border border-indigo-400 bg-white dark:bg-neutral-900 font-mono text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none shadow-2xs"
+                          />
+                        ) : isPast ? (
+                          formatNumber(opsD.pdmV[1])
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+
+                      {/* PDM OS */}
+                      <td className="py-1.5 px-1.5 text-right font-mono text-indigo-600">
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            min={0}
+                            value={inlineEditPdmV[2] || ''}
+                            placeholder="0"
+                            onChange={(e) => setInlineEditPdmV([inlineEditPdmV[0], inlineEditPdmV[1], Math.max(0, Number(e.target.value)), inlineEditPdmV[3]])}
+                            className="w-12 px-1 py-1 text-right rounded-lg border border-indigo-400 bg-white dark:bg-neutral-900 font-mono text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none shadow-2xs"
+                          />
+                        ) : isPast ? (
+                          formatNumber(opsD.pdmV[2])
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+
+                      {/* PDM YT */}
+                      <td className="py-1.5 px-1.5 text-right font-mono text-indigo-600">
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            min={0}
+                            value={inlineEditPdmV[3] || ''}
+                            placeholder="0"
+                            onChange={(e) => setInlineEditPdmV([inlineEditPdmV[0], inlineEditPdmV[1], inlineEditPdmV[2], Math.max(0, Number(e.target.value))])}
+                            className="w-12 px-1 py-1 text-right rounded-lg border border-indigo-400 bg-white dark:bg-neutral-900 font-mono text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none shadow-2xs"
+                          />
+                        ) : isPast ? (
+                          formatNumber(opsD.pdmV[3])
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+
+                      {/* Total PDM */}
+                      <td className="py-2 px-2.5 text-right font-bold text-indigo-700 dark:text-indigo-400">
+                        {isEditing ? (
+                          formatNumber(editTotalPdm)
+                        ) : (isPast && opsD.pdm > 0) ? (
+                          formatNumber(opsD.pdm)
+                        ) : (
+                          <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>
+                        )}
+                      </td>
+
+                      {/* Absen */}
+                      <td className="py-1.5 px-1.5 text-right border-l border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400">
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            min={0}
+                            value={inlineEditAbsen || ''}
+                            placeholder="0"
+                            onChange={(e) => setInlineEditAbsen(Math.max(0, Number(e.target.value)))}
+                            className="w-12 px-1 py-1 text-right rounded-lg border border-neutral-400 bg-white dark:bg-neutral-900 font-mono text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none shadow-2xs"
+                          />
+                        ) : (isPast && opsD.absen > 0) ? (
+                          opsD.absen
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+
+                      {/* Frek */}
+                      <td className="py-1.5 px-1.5 text-right text-neutral-600 dark:text-neutral-400">
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            min={0}
+                            value={inlineEditFrek || ''}
+                            placeholder="0"
+                            onChange={(e) => setInlineEditFrek(Math.max(0, Number(e.target.value)))}
+                            className="w-12 px-1 py-1 text-right rounded-lg border border-neutral-400 bg-white dark:bg-neutral-900 font-mono text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none shadow-2xs"
+                          />
+                        ) : (isPast && opsD.frek > 0) ? (
+                          opsD.frek
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+
+                      {/* JWP */}
+                      <td className="py-2 px-2 text-right text-sky-600 border-l border-neutral-200 dark:border-neutral-700">
+                        {isPast ? formatNumber(opsD.cumJwp) : <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>}
+                      </td>
+
+                      {/* s/YL */}
+                      <td className="py-2 px-2.5 text-right font-bold text-brand-600">
+                        {isPast && opsD.sylDay !== null ? formatNumber(opsD.sylDay) : '—'}
+                      </td>
+
+                      {/* YL < 250 */}
+                      <td className="py-2 px-2 text-right font-bold text-red-600 border-l border-neutral-200 dark:border-neutral-700">
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            min={0}
+                            value={inlineEditL250 || ''}
+                            placeholder="0"
+                            onChange={(e) => setInlineEditL250(Math.max(0, Number(e.target.value)))}
+                            className="w-12 px-1 py-1 text-right rounded-lg border border-red-400 bg-white dark:bg-neutral-900 font-mono font-bold text-xs focus:ring-2 focus:ring-red-500 focus:outline-none shadow-2xs"
+                          />
+                        ) : isPast ? (
+                          formatNumber(opsD.l250)
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+
+                      {/* YL < 300 */}
+                      <td className="py-2 px-2 text-right font-bold text-amber-600">
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            min={0}
+                            value={inlineEditL300 || ''}
+                            placeholder="0"
+                            onChange={(e) => setInlineEditL300(Math.max(0, Number(e.target.value)))}
+                            className="w-12 px-1 py-1 text-right rounded-lg border border-amber-400 bg-white dark:bg-neutral-900 font-mono font-bold text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none shadow-2xs"
+                          />
+                        ) : isPast ? (
+                          formatNumber(opsD.l300)
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+
+                      {/* Aksi */}
+                      <td className="py-1.5 px-2.5 text-center border-l border-neutral-200 dark:border-neutral-700">
+                        {isEditing ? (
+                          <div className="flex items-center justify-center gap-1.5">
+                            <button
+                              onClick={() => handleSaveInlineEdit(d)}
+                              className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1 shadow-xs transition-colors cursor-pointer"
+                              title="Simpan perubahan"
+                            >
+                              <Save className="w-3.5 h-3.5" />
+                              <span>Simpan</span>
+                            </button>
+                            <button
+                              onClick={handleCancelInlineEdit}
+                              className="px-2 py-1 rounded-lg bg-neutral-200 dark:bg-neutral-700 hover:bg-neutral-300 text-neutral-700 dark:text-neutral-300 text-xs font-semibold transition-colors cursor-pointer"
+                              title="Batal edit"
+                            >
+                              Batal
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => handleStartInlineEdit(d)}
+                            disabled={d > day}
+                            className={`p-1.5 px-2.5 rounded-lg border flex items-center gap-1 transition-colors ${
+                              d > day
+                                ? 'opacity-30 cursor-not-allowed border-neutral-200 dark:border-neutral-800 text-neutral-400'
+                                : 'border-neutral-200 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-700 dark:text-neutral-300'
+                            }`}
+                            title={d > day ? 'Belum dapat diedit' : `Edit data tanggal ${d}`}
+                          >
+                            <Edit3 className="w-3 h-3 text-emerald-600" />
+                            <span>Edit</span>
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot className="sticky bottom-0 bg-neutral-100 dark:bg-neutral-800 font-mono font-bold border-t-2 border-neutral-300 dark:border-neutral-700 shadow-xs">
+                <tr>
+                  <td colSpan={2} className="py-3 px-3 font-sans text-neutral-800 dark:text-neutral-200">
+                    Total {selectedRealisasiPeriod === 'ALL' ? 'Satu Bulan Penuh' : realisasiPeriodTitle}
+                  </td>
+                  <td className="py-3 px-1.5 text-right" style={{ color: VARIANTS[0].color }}>{formatNumber(periodTotalYo)}</td>
+                  <td className="py-3 px-1.5 text-right" style={{ color: VARIANTS[1].color }}>{formatNumber(periodTotalOm)}</td>
+                  <td className="py-3 px-1.5 text-right" style={{ color: VARIANTS[2].color }}>{formatNumber(periodTotalOs)}</td>
+                  <td className="py-3 px-1.5 text-right" style={{ color: VARIANTS[3].color }}>{formatNumber(periodTotalYt)}</td>
+                  <td className="py-3 px-2.5 text-right text-emerald-600 text-sm">
+                    {formatNumber(periodTotalSold)} btl
+                  </td>
+                  <td colSpan={5} className="py-3 px-2.5 text-right text-neutral-500 font-normal font-sans text-xs">
+                    Rata: <strong className="text-neutral-900 dark:text-white font-mono">{formatNumber(breakdownDaysToShow.length > 0 ? Math.round(periodTotalSold / breakdownDaysToShow.length) : 0)} btl/hr</strong>
+                  </td>
+
+                  {/* Total BB per varian & total */}
+                  <td className="py-3 px-1.5 text-right text-amber-600 border-l border-neutral-200 dark:border-neutral-700">{formatNumber(periodTotalBbV[0])}</td>
+                  <td className="py-3 px-1.5 text-right text-amber-600">{formatNumber(periodTotalBbV[1])}</td>
+                  <td className="py-3 px-1.5 text-right text-amber-600">{formatNumber(periodTotalBbV[2])}</td>
+                  <td className="py-3 px-1.5 text-right text-amber-600">{formatNumber(periodTotalBbV[3])}</td>
+                  <td className="py-3 px-2 text-right text-amber-700 dark:text-amber-400">{formatNumber(periodTotalBb)}</td>
+                  <td className="py-3 px-2 text-right text-amber-600">{formatPercent((periodTotalSold + periodTotalBb) > 0 ? periodTotalBb / (periodTotalSold + periodTotalBb) : 0)}</td>
+
+                  {/* Total PDM per varian & total */}
+                  <td className="py-3 px-1.5 text-right text-indigo-600 border-l border-neutral-200 dark:border-neutral-700">{formatNumber(periodTotalPdmV[0])}</td>
+                  <td className="py-3 px-1.5 text-right text-indigo-600">{formatNumber(periodTotalPdmV[1])}</td>
+                  <td className="py-3 px-1.5 text-right text-indigo-600">{formatNumber(periodTotalPdmV[2])}</td>
+                  <td className="py-3 px-1.5 text-right text-indigo-600">{formatNumber(periodTotalPdmV[3])}</td>
+                  <td className="py-3 px-2.5 text-right text-indigo-700 dark:text-indigo-400">{formatNumber(periodTotalPdm)}</td>
+
+                  <td className="py-3 px-1.5 text-right border-l border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400">{akmOps.akmAbsen}</td>
+                  <td className="py-3 px-1.5 text-right text-neutral-600 dark:text-neutral-400">{akmOps.akmFrek}</td>
+                  <td className="py-3 px-2 text-right text-sky-600 border-l border-neutral-200 dark:border-neutral-700">{formatNumber(tkuOps.jwp)}</td>
+                  <td className="py-3 px-2.5 text-right text-brand-600 font-bold">{tkuOps.syl !== null ? formatNumber(tkuOps.syl) : '—'}</td>
+                  <td className="py-3 px-2 text-right text-red-600 border-l border-neutral-200 dark:border-neutral-700 font-bold">{tku.l250 ?? l250 ?? 0}</td>
+                  <td className="py-3 px-2 text-right text-amber-600 font-bold">{tku.l300 ?? l300 ?? 0}</td>
+                  <td className="py-3 px-2.5 text-center border-l border-neutral-200 dark:border-neutral-700 text-[10px] text-neutral-400 font-sans font-normal">
+                    {realisasiDaysToShow.length} Hari
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-6 max-w-6xl mx-auto pb-12">
-      {/* 1. Card Profil TKU & Pemilih Akun (Ringkas & Sub-card Kanan Kiri Atas Bawah 2x2) */}
+      {/* 1. Card Profil Informasi Unit TKU (Ringkas & Sub-card Kanan Kiri Atas Bawah 2x2) */}
       <div className="p-3.5 md:p-4 bg-white dark:bg-neutral-900 rounded-2xl border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-2.5">
-        <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-neutral-100 dark:border-neutral-800">
+        <div className="flex items-center justify-between gap-2 pb-2 border-b border-neutral-100 dark:border-neutral-800">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-rose-50 dark:bg-rose-950/60 border border-rose-200/60 dark:border-rose-900/40 flex items-center justify-center text-rose-600 dark:text-rose-400 shrink-0">
+            <div className="w-8 h-8 rounded-xl bg-brand-50 dark:bg-brand-950/60 border border-brand-200/60 dark:border-brand-900/40 flex items-center justify-center text-brand-600 dark:text-brand-400 shrink-0">
               <Building2 className="w-4 h-4" />
             </div>
             <div>
               <div className="flex items-center gap-1.5">
-                <h1 className="text-base md:text-lg font-bold text-neutral-900 dark:text-neutral-100 tracking-tight">
+                <h1 className="text-base md:text-lg leading-tight break-words font-bold text-neutral-900 dark:text-neutral-100 tracking-tight">
                   {tku.nama} (R{tku.rayon})
                 </h1>
                 <span className="text-[10px] font-semibold px-2 py-0.2 rounded-full bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
@@ -888,35 +1868,6 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
                 Unit Operasional Rayon {tku.rayon}
               </p>
             </div>
-          </div>
-
-          {/* Dropdown Pemilih TKU + Opsi Mode Admin */}
-          <div className="flex items-center gap-1.5">
-            <label className="text-[11px] font-semibold text-neutral-500 hidden sm:inline">Pilih Unit:</label>
-            <select
-              value={tkuIdx}
-              onChange={(e) => {
-                const val = e.target.value;
-                if (val === 'admin') {
-                  if (onSwitchToAdmin) onSwitchToAdmin();
-                } else {
-                  if (onSelectTku) onSelectTku(Number(val));
-                }
-              }}
-              aria-label="Pilih Unit TKU atau Mode Admin"
-              className="text-xs font-bold px-2.5 py-1.5 rounded-xl bg-neutral-100 dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 text-neutral-800 dark:text-neutral-200 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors cursor-pointer shadow-2xs focus:ring-2 focus:ring-rose-500 focus:outline-none"
-            >
-              <optgroup label="Akses Manajemen">
-                <option value="admin">⭐ Mode Admin (Cabang & Rayon)</option>
-              </optgroup>
-              <optgroup label="Daftar Unit TKU">
-                {state.tkus.map((t, idx) => (
-                  <option key={idx} value={idx}>
-                    {t.nama} (R{t.rayon})
-                  </option>
-                ))}
-              </optgroup>
-            </select>
           </div>
         </div>
 
@@ -947,7 +1898,7 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
           </div>
 
           <div className="p-2 px-2.5 rounded-xl bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-100 dark:border-neutral-800 flex items-center gap-2">
-            <Clock className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+            <Clock className="w-3.5 h-3.5 text-brand-500 shrink-0" />
             <div className="min-w-0">
               <span className="text-[9px] uppercase font-bold tracking-wider text-neutral-400 block leading-tight">Tgl Update</span>
               <p className="font-semibold text-neutral-800 dark:text-neutral-200 truncate text-[11px]">
@@ -963,31 +1914,88 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
       {/* ========================================================================= */}
       {activeSubMenu === 'input' && (
         <div className="space-y-6 animate-in fade-in duration-200">
+          {/* Pilih Tanggal Input */}
+          <div className="p-4 bg-white dark:bg-neutral-900 rounded-3xl border border-neutral-200 dark:border-neutral-800 shadow-sm space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-start gap-2.5">
+                <Calendar className="w-4 h-4 text-brand-500 mt-0.5 shrink-0" />
+                <div>
+                  <label htmlFor="tku-input-date" className="text-xs font-bold text-neutral-900 dark:text-neutral-100 block">
+                    Pilih Tanggal Input
+                  </label>
+                  <p className="text-[11px] text-neutral-500 mt-0.5">
+                    Kelewatan input? Pilih tanggalnya, isi penjualan, lalu simpan.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  id="tku-input-date"
+                  type="date"
+                  min={minInputDate}
+                  max={maxInputDate}
+                  value={inputDate}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (!val) return;
+                    if (val < minInputDate || val > maxInputDate) {
+                      showToast('Tanggal harus di dalam bulan kerja dan tidak melewati tanggal update.', 'error');
+                      return;
+                    }
+                    setInputDate(val);
+                  }}
+                  className="px-3 py-2 rounded-xl border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-sm font-mono font-bold text-neutral-900 dark:text-white focus:ring-2 focus:ring-brand-500 focus:outline-none"
+                />
+                {isBackdate && (
+                  <button
+                    type="button"
+                    onClick={() => setInputDate(state.activeDate)}
+                    className="px-3 py-2 rounded-xl bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-xs font-semibold text-neutral-700 dark:text-neutral-200 flex items-center gap-1.5 transition-colors"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    Hari ini
+                  </button>
+                )}
+              </div>
+            </div>
+            {isBackdate && (
+              <div className="p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/60 text-[11px] text-amber-900 dark:text-amber-200 flex items-start gap-2">
+                <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                <span>
+                  Kamu sedang mengisi tanggal <strong>{formatDateIndo(inputDate)}</strong> (bukan hari ini).{' '}
+                  {backdateExisting
+                    ? 'Tanggal ini sudah ada datanya — menyimpan akan menggantikan data lama.'
+                    : 'Belum ada data tersimpan untuk tanggal ini.'}{' '}
+                  Akumulasi TKU akan dihitung ulang otomatis.
+                </span>
+              </div>
+            )}
+          </div>
+
           {/* Section 1: Sales per Variant */}
           <div className="p-6 bg-white dark:bg-neutral-900 rounded-3xl border border-neutral-200 dark:border-neutral-800 shadow-sm space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
                 <h2 className="text-base font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
-                  <span className="w-6 h-6 rounded-lg bg-rose-600 text-white flex items-center justify-center text-xs">1</span>
-                  Input Penjualan Hari Ini ({formatDateIndo(state.activeDate)})
+                  <span className="w-6 h-6 rounded-lg bg-brand-600 text-white flex items-center justify-center text-xs">1</span>
+                  Penjualan
                 </h2>
-                <p className="text-xs text-neutral-500 mt-0.5">
-                  Masukkan jumlah botol terjual riil hari ini untuk setiap varian rasa produk
-                </p>
               </div>
 
               <div className="px-3.5 py-1.5 rounded-xl bg-neutral-100 dark:bg-neutral-800 text-xs font-mono font-bold text-neutral-800 dark:text-neutral-200 self-start sm:self-auto">
-                Total Terjual: <span className="text-rose-600 dark:text-rose-400">{formatNumber(totalSoldToday)}</span> btl
+                Total Terjual: <span className="text-brand-600 dark:text-brand-400">{formatNumber(totalSoldToday)}</span> btl
               </div>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               {VARIANTS.map((v, i) => (
-                <div key={v.code} className="p-4 rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50/60 dark:bg-neutral-800/40 hover:border-neutral-300 dark:hover:border-neutral-700 transition-colors">
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="text-xs font-bold" style={{ color: v.color }}>
-                      {v.code} &bull; {v.name}
+                <div key={v.code} className="p-4 rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50/60 dark:bg-neutral-800/40 hover:border-neutral-300 dark:hover:border-neutral-700 transition-colors min-w-0">
+                  <div className="mb-2 min-w-0">
+                    <label className="flex items-center gap-1.5 text-xs font-bold leading-tight" style={{ color: v.color }}>
+                      <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: v.color }} />
+                      {v.code}
                     </label>
+                    <span className="block text-[11px] leading-tight text-neutral-500 dark:text-neutral-400 truncate" title={v.name}>{v.name}</span>
                   </div>
                   <div className="relative">
                     <input
@@ -1001,9 +2009,9 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
                         setSalesV(next);
                       }}
                       placeholder="0"
-                      className="w-full px-3 py-2.5 rounded-xl border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-base font-mono font-bold text-neutral-900 dark:text-white focus:ring-2 focus:ring-rose-500 focus:outline-none"
+                      className="w-full pl-3 pr-10 py-2.5 rounded-xl border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-base font-mono font-bold text-neutral-900 dark:text-white focus:ring-2 focus:ring-brand-500 focus:outline-none"
                     />
-                    <span className="absolute right-3 top-2.5 text-xs text-neutral-400 font-sans">btl</span>
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-xs text-neutral-400 font-sans">btl</span>
                   </div>
                 </div>
               ))}
@@ -1016,11 +2024,8 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
               <div>
                 <h2 className="text-base font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
                   <span className="w-6 h-6 rounded-lg bg-amber-600 text-white flex items-center justify-center text-xs">2</span>
-                  BB per Varian
+                  BB
                 </h2>
-                <p className="text-xs text-neutral-500 mt-0.5">
-                  Catat pengembalian botol kosong/reject per varian dari konsumen
-                </p>
               </div>
 
               <div className="px-3.5 py-1.5 rounded-xl bg-neutral-100 dark:bg-neutral-800 text-xs font-mono font-bold text-neutral-800 dark:text-neutral-200 self-start sm:self-auto">
@@ -1028,12 +2033,13 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
               </div>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               {VARIANTS.map((v, i) => (
-                <div key={v.code} className="p-4 rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50/60 dark:bg-neutral-800/40">
-                  <label className="block text-xs font-semibold text-neutral-600 dark:text-neutral-400 mb-2">
-                    BB {v.code} ({v.name})
-                  </label>
+                <div key={v.code} className="p-4 rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50/60 dark:bg-neutral-800/40 min-w-0">
+                  <div className="mb-2 min-w-0">
+                    <label className="block text-xs font-bold leading-tight text-neutral-700 dark:text-neutral-300">BB {v.code}</label>
+                    <span className="block text-[11px] leading-tight text-neutral-500 dark:text-neutral-400 truncate" title={v.name}>{v.name}</span>
+                  </div>
                   <div className="relative">
                     <input
                       type="number"
@@ -1046,9 +2052,9 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
                         setBbV(next);
                       }}
                       placeholder="0"
-                      className="w-full px-3 py-2 rounded-xl border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-sm font-mono text-neutral-900 dark:text-white focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                      className="w-full pl-3 pr-10 py-2 rounded-xl border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-sm font-mono text-neutral-900 dark:text-white focus:ring-2 focus:ring-amber-500 focus:outline-none"
                     />
-                    <span className="absolute right-3 top-2 text-xs text-neutral-400">btl</span>
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-xs text-neutral-400">btl</span>
                   </div>
                 </div>
               ))}
@@ -1056,16 +2062,13 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
           </div>
 
           {/* Section 3: PDM per Varian & Total */}
-          <div className="p-6 bg-white dark:bg-neutral-900 rounded-3xl border border-rose-200/80 dark:border-rose-900/50 shadow-sm space-y-4 bg-gradient-to-br from-white via-white to-rose-50/20 dark:from-neutral-900 dark:via-neutral-900 dark:to-rose-950/10">
+          <div className="p-6 bg-white dark:bg-neutral-900 rounded-3xl border border-indigo-200/80 dark:border-indigo-900/50 shadow-sm space-y-4 bg-gradient-to-br from-white via-white to-indigo-50/20 dark:from-neutral-900 dark:via-neutral-900 dark:to-indigo-950/10">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <h2 className="text-base font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
                   <span className="w-6 h-6 rounded-lg bg-indigo-600 text-white flex items-center justify-center text-xs">3</span>
-                  Input PDM per Varian
+                  PDM
                 </h2>
-                <p className="text-xs text-neutral-500 mt-0.5">
-                  Masukkan jumlah botol pengambilan di muka untuk masing-masing varian beserta kalkulasi total otomatis
-                </p>
               </div>
 
               {/* Total PDM Highlight Badge */}
@@ -1079,15 +2082,15 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
               </div>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               {VARIANTS.map((v, i) => (
                 <div key={v.code} className="p-4 rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white/90 dark:bg-neutral-800/70 shadow-2xs">
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="text-xs font-bold flex items-center gap-1.5" style={{ color: v.color }}>
-                      <span className="w-2 h-2 rounded-full" style={{ backgroundColor: v.color }} />
+                  <div className="mb-2 min-w-0">
+                    <label className="flex items-center gap-1.5 text-xs font-bold leading-tight" style={{ color: v.color }}>
+                      <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: v.color }} />
                       PDM {v.code}
                     </label>
-                    <span className="text-[10px] text-neutral-400 font-mono">({v.name})</span>
+                    <span className="block text-[11px] leading-tight text-neutral-500 dark:text-neutral-400 truncate" title={v.name}>{v.name}</span>
                   </div>
                   <div className="relative">
                     <input
@@ -1101,9 +2104,9 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
                         setPdmV(next);
                       }}
                       placeholder="0"
-                      className="w-full px-3 py-2.5 rounded-xl border border-neutral-300 dark:border-neutral-700 bg-neutral-50/50 dark:bg-neutral-900 text-sm font-mono font-bold text-neutral-900 dark:text-white focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                      className="w-full pl-3 pr-10 py-2.5 rounded-xl border border-neutral-300 dark:border-neutral-700 bg-neutral-50/50 dark:bg-neutral-900 text-sm font-mono font-bold text-neutral-900 dark:text-white focus:ring-2 focus:ring-indigo-500 focus:outline-none"
                     />
-                    <span className="absolute right-3 top-2.5 text-xs text-neutral-400">btl</span>
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-xs text-neutral-400">btl</span>
                   </div>
                 </div>
               ))}
@@ -1125,43 +2128,46 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
             </div>
           </div>
 
-          {/* Section 5: Live Summary Preview */}
-          <div className="p-5 bg-gradient-to-r from-rose-50 to-red-50/50 dark:from-rose-950/30 dark:to-neutral-900 rounded-3xl border border-rose-200 dark:border-rose-900/60 shadow-sm space-y-3">
+          {/* Card Kondisi & Parameter Operasional (Dipindah dari menu Realisasi ke setelah PDM, tidak ikut simpan harian) */}
+          {renderOpsCard()}
+
+          {/* Section 4: Live Summary Preview */}
+          <div className="p-5 bg-gradient-to-r from-brand-50 to-brand-100/50 dark:from-brand-950/30 dark:to-neutral-900 rounded-3xl border border-brand-200 dark:border-brand-900/60 shadow-sm space-y-3">
             <div className="flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-rose-600" />
-              <h2 className="text-sm font-bold text-rose-950 dark:text-rose-200">
-                Ringkasan Kalkulasi Langsung Hari Ini:
+              <Sparkles className="w-4 h-4 text-brand-600" />
+              <h2 className="text-sm font-bold text-brand-950 dark:text-brand-200">
+                Ringkasan
               </h2>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 font-mono text-xs items-stretch">
-              <div className="p-3.5 bg-white/90 dark:bg-neutral-800/90 rounded-2xl border border-rose-100/80 dark:border-neutral-700/80 shadow-2xs flex flex-col justify-between">
-                <span className="text-[11px] font-sans text-neutral-500 block mb-1">Total Terjual</span>
-                <span className="text-base font-bold text-neutral-900 dark:text-neutral-100">
+            <div className="grid grid-cols-2 md:grid-cols-6 lg:grid-cols-5 gap-3 font-mono text-xs items-stretch">
+              <div className="p-3.5 bg-white/90 dark:bg-neutral-800/90 rounded-2xl border border-brand-100/80 dark:border-neutral-700/80 shadow-2xs flex flex-col justify-between min-w-0 h-full overflow-hidden col-span-1 md:col-span-2 lg:col-span-1">
+                <span className="text-[11px] leading-tight font-sans text-neutral-500 block mb-1 truncate">Total Terjual</span>
+                <span className="text-base font-bold text-neutral-900 dark:text-neutral-100 truncate">
                   {formatNumber(totalSoldToday)} <span className="text-xs font-normal text-neutral-400 font-sans">btl</span>
                 </span>
               </div>
-              <div className="p-3.5 bg-white/90 dark:bg-neutral-800/90 rounded-2xl border border-rose-100/80 dark:border-neutral-700/80 shadow-2xs flex flex-col justify-between">
-                <span className="text-[11px] font-sans text-neutral-500 block mb-1">Total PDM</span>
-                <span className="text-base font-bold text-indigo-600 dark:text-indigo-400">
+              <div className="p-3.5 bg-white/90 dark:bg-neutral-800/90 rounded-2xl border border-brand-100/80 dark:border-neutral-700/80 shadow-2xs flex flex-col justify-between min-w-0 h-full overflow-hidden col-span-1 md:col-span-2 lg:col-span-1">
+                <span className="text-[11px] leading-tight font-sans text-neutral-500 block mb-1 truncate">Total PDM</span>
+                <span className="text-base font-bold text-indigo-600 dark:text-indigo-400 truncate">
                   {formatNumber(totalPdmToday)} <span className="text-xs font-normal text-neutral-400 font-sans">btl</span>
                 </span>
               </div>
-              <div className="p-3.5 bg-white/90 dark:bg-neutral-800/90 rounded-2xl border border-rose-100/80 dark:border-neutral-700/80 shadow-2xs flex flex-col justify-between">
-                <span className="text-[11px] font-sans text-neutral-500 block mb-1">% BB</span>
-                <span className="text-base font-bold text-neutral-900 dark:text-neutral-100">
+              <div className="p-3.5 bg-white/90 dark:bg-neutral-800/90 rounded-2xl border border-brand-100/80 dark:border-neutral-700/80 shadow-2xs flex flex-col justify-between min-w-0 h-full overflow-hidden col-span-1 md:col-span-2 lg:col-span-1">
+                <span className="text-[11px] leading-tight font-sans text-neutral-500 block mb-1 truncate">% BB</span>
+                <span className="text-base font-bold text-neutral-900 dark:text-neutral-100 truncate">
                   {formatPercent(bbPct)}
                 </span>
               </div>
-              <div className="p-3.5 bg-white/90 dark:bg-neutral-800/90 rounded-2xl border border-rose-100/80 dark:border-neutral-700/80 shadow-2xs flex flex-col justify-between">
-                <span className="text-[11px] font-sans text-neutral-500 block mb-1">YL &lt; 250 / &lt; 300</span>
-                <span className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
+              <div className="p-3.5 bg-white/90 dark:bg-neutral-800/90 rounded-2xl border border-brand-100/80 dark:border-neutral-700/80 shadow-2xs flex flex-col justify-between min-w-0 h-full overflow-hidden col-span-1 md:col-span-3 lg:col-span-1">
+                <span className="text-[11px] leading-tight font-sans text-neutral-500 block mb-1 truncate">YL &lt; 250 / &lt; 300</span>
+                <span className="text-sm font-bold text-neutral-900 dark:text-neutral-100 truncate">
                   {formatPercent(pctL250)} / {formatPercent(pctL300)}
                 </span>
               </div>
-              <div className="p-3.5 bg-white/90 dark:bg-neutral-800/90 rounded-2xl border border-rose-100/80 dark:border-neutral-700/80 shadow-2xs flex flex-col justify-between col-span-2 sm:col-span-1">
-                <span className="text-[11px] font-sans text-neutral-500 block mb-1">s/YL</span>
-                <span className="text-base font-bold text-neutral-900 dark:text-neutral-100">
+              <div className="p-3.5 bg-white/90 dark:bg-neutral-800/90 rounded-2xl border border-brand-100/80 dark:border-neutral-700/80 shadow-2xs flex flex-col justify-between min-w-0 h-full overflow-hidden col-span-2 md:col-span-3 lg:col-span-1">
+                <span className="text-[11px] leading-tight font-sans text-neutral-500 block mb-1 truncate">s/YL</span>
+                <span className="text-base font-bold text-neutral-900 dark:text-neutral-100 truncate">
                   {syl ? formatNumber(syl) : '—'}
                 </span>
               </div>
@@ -1171,15 +2177,17 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
           {/* Action Bar: Save Data */}
           <div className="sticky bottom-4 z-20 p-4 bg-white/95 dark:bg-neutral-900/95 backdrop-blur-md rounded-2xl border border-neutral-200 dark:border-neutral-800 shadow-lg flex items-center justify-between gap-4">
             <div className="text-xs text-neutral-500 hidden sm:block">
-              Perubahan penjualan akan langsung mengupdate akumulasi dan rata-rata kinerja TKU.
+              {isBackdate
+                ? `Menyimpan data tanggal ${formatDateIndo(inputDate)} — akumulasi dan rata-rata TKU dihitung ulang otomatis.`
+                : 'Perubahan penjualan akan langsung mengupdate akumulasi dan rata-rata kinerja TKU.'}
             </div>
 
             <button
               onClick={handleSave}
-              className="w-full sm:w-auto ml-auto px-6 py-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-sm shadow-md shadow-rose-600/20 flex items-center justify-center gap-2 transition-transform active:scale-95"
+              className="w-full sm:w-auto ml-auto px-6 py-3 rounded-xl bg-brand-600 hover:bg-brand-700 text-white font-bold text-sm shadow-md shadow-brand-600/20 flex items-center justify-center gap-2 transition-transform active:scale-95"
             >
               <Save className="w-4 h-4" />
-              <span>Simpan Data Penjualan Hari Ini</span>
+              <span>{isBackdate ? `Simpan Data Tgl ${inputDay} ${period.namaBulanPendek}` : 'Simpan Data Penjualan Hari Ini'}</span>
             </button>
           </div>
         </div>
@@ -1198,12 +2206,9 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
           <div className="p-4 md:p-5 bg-white dark:bg-neutral-900 rounded-2xl border border-neutral-200 dark:border-neutral-800 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <div className="space-y-0.5">
               <h2 className="text-base font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
-                <Target className="w-5 h-5 text-rose-600" />
-                Breakdown Rencana Target Penjualan {tku.nama}
+                <Target className="w-5 h-5 text-brand-600" />
+                Breakdown
               </h2>
-              <p className="text-xs text-neutral-500">
-                Rencana target kerja harian 4 varian &bull; Target Harian Resmi: <strong className="text-rose-600 dark:text-rose-400 font-mono">{formatNumber(targetHarian)} btl/hr</strong>
-              </p>
             </div>
           </div>
 
@@ -1212,16 +2217,13 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
                 <h3 className="text-base font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
-                  <Target className="w-5 h-5 text-rose-600" />
-                  Rekapitulasi Target Rencana Mingguan &bull; Pertumbuhan vs Minggu Sebelumnya
+                  <Target className="w-5 h-5 text-brand-600" />
+                  Target Mingguan
                 </h3>
-                <p className="text-xs text-neutral-500">
-                  Rangkuman rencana target per minggu dan evaluasi pertumbuhan perbandingan terhadap minggu sebelumnya
-                </p>
               </div>
 
               <div className="px-3.5 py-1.5 rounded-xl bg-neutral-100 dark:bg-neutral-800 text-xs font-mono font-semibold text-neutral-700 dark:text-neutral-300">
-                Target Harian: <strong className="text-rose-600">{formatNumber(targetHarian)} btl/hr</strong>
+                Target Harian: <strong className="text-brand-600">{formatNumber(targetHarian)} btl/hr</strong>
               </div>
             </div>
 
@@ -1231,7 +2233,7 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
                   <tr className="border-b border-neutral-200 dark:border-neutral-800 text-neutral-500 font-semibold bg-neutral-50 dark:bg-neutral-800/50">
                     <th className="py-2.5 px-3">Periode Minggu</th>
                     <th className="py-2.5 px-3 text-right">Rencana Minggu Ini</th>
-                    <th className="py-2.5 px-3 text-right text-rose-600 dark:text-rose-400 font-bold">Akumulasi</th>
+                    <th className="py-2.5 px-3 text-right text-brand-600 dark:text-brand-400 font-bold">Akumulasi</th>
                     <th className="py-2.5 px-3 text-right font-bold">Rata-rata/hr</th>
                     <th className="py-2.5 px-3 text-right font-bold text-neutral-900 dark:text-white border-l border-neutral-200 dark:border-neutral-700">vs Minggu Sebelumnya (%)</th>
                     <th className="py-2.5 px-3 text-right font-bold text-neutral-900 dark:text-white">Pertumbuhan / Selisih (btl)</th>
@@ -1282,7 +2284,7 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
                           onClick={() => setSelectedBreakdownPeriod(pKey)}
                           className={`cursor-pointer transition-colors ${
                             isSelected
-                              ? 'bg-rose-50/70 dark:bg-rose-950/30 font-semibold'
+                              ? 'bg-brand-50/70 dark:bg-brand-950/30 font-semibold'
                               : 'hover:bg-neutral-50 dark:hover:bg-neutral-800/40'
                           }`}
                         >
@@ -1293,7 +2295,7 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
                                 (Tgl {w.start}–{w.end} {period.namaBulanPendek})
                               </span>
                               {isSelected && (
-                                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-rose-600 text-white font-semibold">
+                                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-brand-600 text-white font-semibold">
                                   Terpilih
                                 </span>
                               )}
@@ -1305,7 +2307,7 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
                               YO:{formatNumber(weekPlanV[0])} OM:{formatNumber(weekPlanV[1])} OS:{formatNumber(weekPlanV[2])} YT:{formatNumber(weekPlanV[3])}
                             </div>
                           </td>
-                          <td className="py-3 px-3 text-right font-bold text-rose-600 dark:text-rose-400">
+                          <td className="py-3 px-3 text-right font-bold text-brand-600 dark:text-brand-400">
                             {formatNumber(runningCumTotal)} btl
                             <div className="text-[10px] text-neutral-400 font-normal">
                               Akm V: {formatNumber(runningCumV[0])} / {formatNumber(runningCumV[1])} / {formatNumber(runningCumV[2])} / {formatNumber(runningCumV[3])}
@@ -1316,7 +2318,7 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
                           </td>
                           <td className="py-3 px-3 text-right font-bold border-l border-neutral-200 dark:border-neutral-700">
                             {vsPrevPct !== null ? (
-                              <span className={vsPrevPct >= 1 ? 'text-emerald-600' : 'text-rose-600'}>
+                              <span className={vsPrevPct >= 1 ? 'text-emerald-600' : 'text-red-600'}>
                                 {formatPercent(vsPrevPct)}
                               </span>
                             ) : (
@@ -1325,7 +2327,7 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
                           </td>
                           <td className="py-3 px-3 text-right font-semibold">
                             {vsPrevDiff !== null ? (
-                              <span className={vsPrevDiff >= 0 ? 'text-emerald-600 font-bold' : 'text-rose-600 font-bold'}>
+                              <span className={vsPrevDiff >= 0 ? 'text-emerald-600 font-bold' : 'text-red-600 font-bold'}>
                                 {vsPrevDiff >= 0 ? `+${formatNumber(vsPrevDiff)}` : formatNumber(vsPrevDiff)} btl
                               </span>
                             ) : (
@@ -1351,12 +2353,9 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
                 <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-2 border-b border-neutral-100 dark:border-neutral-800">
                   <div>
                     <h3 className="text-base font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
-                      <Target className="w-5 h-5 text-rose-600" />
-                      Detail Rencana Harian per Varian &bull; {breakdownPeriodTitle}
+                      <Target className="w-5 h-5 text-brand-600" />
+                      Rencana Harian
                     </h3>
-                    <p className="text-xs text-neutral-500">
-                      Rincian target rencana per varian (YO, OM, OS, YT) untuk setiap hari kerja dalam {breakdownPeriodTitle}
-                    </p>
                   </div>
 
                   {/* Switcher M1, M2, M3, M4, M5, Satu Bulan */}
@@ -1374,7 +2373,7 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
                         onClick={() => setSelectedBreakdownPeriod(p.id as any)}
                         className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                           selectedBreakdownPeriod === p.id
-                            ? 'bg-rose-600 text-white shadow-xs'
+                            ? 'bg-brand-600 text-white shadow-xs'
                             : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
                         }`}
                       >
@@ -1395,7 +2394,7 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
                         <th className="py-2.5 px-2 text-right" style={{ color: VARIANTS[2].color }}>OS (Edit)</th>
                         <th className="py-2.5 px-2 text-right" style={{ color: VARIANTS[3].color }}>YT (Edit)</th>
                         <th className="py-2.5 px-2.5 text-right font-bold text-neutral-900 dark:text-white">Rencana Harian</th>
-                        <th className="py-2.5 px-2.5 text-right text-rose-600 dark:text-rose-400 font-bold">Akumulasi</th>
+                        <th className="py-2.5 px-2.5 text-right text-brand-600 dark:text-brand-400 font-bold">Akumulasi</th>
                         <th className="py-2.5 px-2.5 text-right font-bold">Rata-rata/hr (Per Varian & Total)</th>
                         <th className="py-2.5 px-2.5 text-right">vs Tgt ({formatNumber(targetHarian)})</th>
                         <th className="py-2.5 px-2.5 text-right">vs LM ({formatNumber(blHarian)})</th>
@@ -1438,7 +2437,7 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
                             key={d}
                             className={`transition-colors ${
                               isToday
-                                ? 'bg-rose-50/50 dark:bg-rose-950/20 font-semibold'
+                                ? 'bg-brand-50/50 dark:bg-brand-950/20 font-semibold'
                                 : isSun
                                 ? 'bg-amber-50/30 dark:bg-amber-950/10 text-neutral-400'
                                 : 'hover:bg-neutral-50 dark:hover:bg-neutral-800/40'
@@ -1448,7 +2447,7 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
                               <div className="flex items-center gap-1.5 font-bold font-sans">
                                 <span>Tgl {d}</span>
                                 {isToday && (
-                                  <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-rose-600 text-white font-semibold">
+                                  <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-brand-600 text-white font-semibold">
                                     Hari Ini
                                   </span>
                                 )}
@@ -1475,7 +2474,7 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
                                   onFocus={(e) => e.target.select()}
                                   onPaste={(e) => handleCellPaste(e, d, v.code)}
                                   onKeyDown={(e) => handleCellKeyDown(e, d, v.code)}
-                                  className="w-16 px-1.5 py-1 text-right font-mono font-bold text-xs rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800/80 hover:border-rose-400 focus:border-rose-500 focus:bg-white dark:focus:bg-neutral-900 focus:ring-2 focus:ring-rose-500/20 focus:outline-none transition-all shadow-2xs"
+                                  className="w-16 px-1.5 py-1 text-right font-mono font-bold text-xs rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800/80 hover:border-brand-400 focus:border-brand-500 focus:bg-white dark:focus:bg-neutral-900 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition-all shadow-2xs"
                                   style={{ color: v.color }}
                                   title={`Tgl ${d} • Target ${v.code} (${v.name})`}
                                 />
@@ -1484,7 +2483,7 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
                             <td className="py-2 px-2.5 text-right font-bold text-neutral-900 dark:text-neutral-100">
                               {formatNumber(p.total)} btl
                             </td>
-                            <td className="py-2 px-2.5 text-right font-bold text-rose-600 dark:text-rose-400">
+                            <td className="py-2 px-2.5 text-right font-bold text-brand-600 dark:text-brand-400">
                               {formatNumber(cum.cumTotal)} btl
                               <div className="text-[10px] text-neutral-400 font-normal">
                                 {formatNumber(cum.cumYo)} / {formatNumber(cum.cumOm)} / {formatNumber(cum.cumOs)} / {formatNumber(cum.cumYt)}
@@ -1497,10 +2496,10 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
                               </div>
                             </td>
                             <td className="py-2 px-2.5 text-right font-bold">
-                              <span className={vsTgPct >= 1 ? 'text-emerald-600' : 'text-rose-600'}>
+                              <span className={vsTgPct >= 1 ? 'text-emerald-600' : 'text-red-600'}>
                                 {formatPercent(vsTgPct)}
                               </span>
-                              <div className={`text-[10px] ${vsTgDiff >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                              <div className={`text-[10px] ${vsTgDiff >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
                                 {vsTgDiff >= 0 ? `+${formatNumber(vsTgDiff)}` : formatNumber(vsTgDiff)}
                               </div>
                             </td>
@@ -1508,7 +2507,7 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
                               <span className={vsBlPct >= 1 ? 'text-emerald-600' : 'text-neutral-600 dark:text-neutral-400'}>
                                 {formatPercent(vsBlPct)}
                               </span>
-                              <div className={`text-[10px] ${vsBlDiff >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                              <div className={`text-[10px] ${vsBlDiff >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
                                 {vsBlDiff >= 0 ? `+${formatNumber(vsBlDiff)}` : formatNumber(vsBlDiff)}
                               </div>
                             </td>
@@ -1516,7 +2515,7 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
                               <span className={vsTyPct >= 1 ? 'text-emerald-600' : 'text-neutral-600 dark:text-neutral-400'}>
                                 {formatPercent(vsTyPct)}
                               </span>
-                              <div className={`text-[10px] ${vsTyDiff >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                              <div className={`text-[10px] ${vsTyDiff >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
                                 {vsTyDiff >= 0 ? `+${formatNumber(vsTyDiff)}` : formatNumber(vsTyDiff)}
                               </div>
                             </td>
@@ -1533,7 +2532,7 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
                         <td className="py-3 px-1.5 text-right" style={{ color: VARIANTS[1].color }}>{formatNumber(curVPlan[1])}</td>
                         <td className="py-3 px-1.5 text-right" style={{ color: VARIANTS[2].color }}>{formatNumber(curVPlan[2])}</td>
                         <td className="py-3 px-1.5 text-right" style={{ color: VARIANTS[3].color }}>{formatNumber(curVPlan[3])}</td>
-                        <td className="py-3 px-2.5 text-right text-rose-600 dark:text-rose-400 text-sm">
+                        <td className="py-3 px-2.5 text-right text-brand-600 dark:text-brand-400 text-sm">
                           {formatNumber(curTotalPlan)} btl
                         </td>
                         <td colSpan={5} className="py-3 px-3 text-right text-neutral-500 font-normal font-sans text-xs">
@@ -1550,660 +2549,7 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
       )}
 
 
-      {activeSubMenu === 'realisasi' && (
-        <div className="space-y-6 animate-in fade-in duration-200">
-          {/* Judul Menu Realisasi */}
-          <div className="p-4 md:p-5 bg-white dark:bg-neutral-900 rounded-2xl border border-neutral-200 dark:border-neutral-800 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div className="space-y-0.5">
-              <h2 className="text-base font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
-                <CalendarRange className="w-5 h-5 text-emerald-600" />
-                Realisasi Penjualan &amp; Operasional {tku.nama}
-              </h2>
-              <p className="text-xs text-neutral-500">
-                Data hasil penjualan riil harian &bull; Target Harian: <strong className="text-neutral-700 dark:text-neutral-300 font-mono">{formatNumber(targetHarian)} btl/hr</strong> &bull; Total Realisasi s/d Tgl {day}: <strong className="text-emerald-600 dark:text-emerald-400 font-mono">{formatNumber(tkuAkmTotal)} btl</strong>
-              </p>
-            </div>
-            
-            {/* Bar Edit Cepat Parameter Operasional Master */}
-            <div className="flex flex-wrap items-center gap-2 pt-2 lg:pt-0 border-t lg:border-t-0 border-neutral-100 dark:border-neutral-800">
-              {/* 1. Jml YL */}
-              <div className="flex items-center gap-1.5 text-xs bg-neutral-50 dark:bg-neutral-800 px-2.5 py-1.5 rounded-xl border border-neutral-200/60 dark:border-neutral-700">
-                <span className="text-neutral-500 font-medium">Jml YL:</span>
-                <input
-                  type="number"
-                  min={1}
-                  value={yl || ''}
-                  onChange={(e) => {
-                    const val = Math.max(1, Number(e.target.value));
-                    setYl(val);
-                    const rec: DailySalesRecord = {
-                      v: salesV, b: bbV, sold: totalSoldToday, bb: totalBbToday, pdmV, pdm: totalPdmToday,
-                      yl: val, ar, l250, l300, jwpm: jwpCustom, jwp: effectiveJwp, absen, frek
-                    };
-                    onSaveTkuInput(tkuIdx, rec);
-                  }}
-                  className="w-11 text-center font-mono font-bold bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-600 rounded py-0.5 focus:ring-2 focus:ring-rose-500 focus:outline-none"
-                />
-              </div>
-
-              {/* 2. Area */}
-              <div className="flex items-center gap-1.5 text-xs bg-neutral-50 dark:bg-neutral-800 px-2.5 py-1.5 rounded-xl border border-neutral-200/60 dark:border-neutral-700">
-                <span className="text-neutral-500 font-medium">Area:</span>
-                <input
-                  type="number"
-                  min={1}
-                  value={ar || ''}
-                  onChange={(e) => {
-                    const val = Math.max(1, Number(e.target.value));
-                    setAr(val);
-                    const rec: DailySalesRecord = {
-                      v: salesV, b: bbV, sold: totalSoldToday, bb: totalBbToday, pdmV, pdm: totalPdmToday,
-                      yl, ar: val, l250, l300, jwpm: jwpCustom, jwp: effectiveJwp, absen, frek
-                    };
-                    onSaveTkuInput(tkuIdx, rec);
-                  }}
-                  className="w-11 text-center font-mono font-bold bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-600 rounded py-0.5 focus:ring-2 focus:ring-rose-500 focus:outline-none"
-                />
-              </div>
-
-              {/* 3. JWP */}
-              <div className="flex items-center gap-1.5 text-xs bg-sky-50/60 dark:bg-sky-950/30 px-2.5 py-1.5 rounded-xl border border-sky-200/60 dark:border-sky-900/40">
-                <span className="text-sky-700 dark:text-sky-400 font-semibold">JWP:</span>
-                <input
-                  type="number"
-                  min={0}
-                  value={jwpCustom || ''}
-                  onChange={(e) => {
-                    const val = Math.max(0, Number(e.target.value));
-                    setJwpCustom(val);
-                    const rec: DailySalesRecord = {
-                      v: salesV, b: bbV, sold: totalSoldToday, bb: totalBbToday, pdmV, pdm: totalPdmToday,
-                      yl, ar, l250, l300, jwpm: val, jwp: val, absen, frek
-                    };
-                    onSaveTkuInput(tkuIdx, rec);
-                  }}
-                  placeholder={String(yl * day)}
-                  className="w-14 text-center font-mono font-bold text-sky-700 dark:text-sky-300 bg-white dark:bg-neutral-900 border border-sky-300 dark:border-sky-700 rounded py-0.5 focus:ring-2 focus:ring-sky-500 focus:outline-none"
-                />
-              </div>
-
-              {/* 4. Absen */}
-              <div className="flex items-center gap-1.5 text-xs bg-purple-50/60 dark:bg-purple-950/30 px-2.5 py-1.5 rounded-xl border border-purple-200/60 dark:border-purple-900/40">
-                <span className="text-purple-700 dark:text-purple-400 font-semibold">Absen:</span>
-                <input
-                  type="number"
-                  min={0}
-                  value={absen || ''}
-                  onChange={(e) => {
-                    const val = Math.max(0, Number(e.target.value));
-                    setAbsen(val);
-                    const rec: DailySalesRecord = {
-                      v: salesV, b: bbV, sold: totalSoldToday, bb: totalBbToday, pdmV, pdm: totalPdmToday,
-                      yl, ar, l250, l300, jwpm: jwpCustom, jwp: effectiveJwp, absen: val, frek
-                    };
-                    onSaveTkuInput(tkuIdx, rec);
-                  }}
-                  placeholder="0"
-                  className="w-11 text-center font-mono font-bold text-purple-700 dark:text-purple-300 bg-white dark:bg-neutral-900 border border-purple-300 dark:border-purple-700 rounded py-0.5 focus:ring-2 focus:ring-purple-500 focus:outline-none"
-                />
-              </div>
-
-              {/* 5. Freq */}
-              <div className="flex items-center gap-1.5 text-xs bg-indigo-50/60 dark:bg-indigo-950/30 px-2.5 py-1.5 rounded-xl border border-indigo-200/60 dark:border-indigo-900/40">
-                <span className="text-indigo-700 dark:text-indigo-400 font-semibold">Freq:</span>
-                <input
-                  type="number"
-                  min={0}
-                  value={frek || ''}
-                  onChange={(e) => {
-                    const val = Math.max(0, Number(e.target.value));
-                    setFrek(val);
-                    const rec: DailySalesRecord = {
-                      v: salesV, b: bbV, sold: totalSoldToday, bb: totalBbToday, pdmV, pdm: totalPdmToday,
-                      yl, ar, l250, l300, jwpm: jwpCustom, jwp: effectiveJwp, absen, frek: val
-                    };
-                    onSaveTkuInput(tkuIdx, rec);
-                  }}
-                  placeholder="0"
-                  className="w-11 text-center font-mono font-bold text-indigo-700 dark:text-indigo-300 bg-white dark:bg-neutral-900 border border-indigo-300 dark:border-indigo-700 rounded py-0.5 focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                />
-              </div>
-
-              {/* 6. YL < 250 */}
-              <div className="flex items-center gap-1.5 text-xs bg-rose-50/60 dark:bg-rose-950/30 px-2.5 py-1.5 rounded-xl border border-rose-200/60 dark:border-rose-900/40">
-                <span className="text-rose-700 dark:text-rose-400 font-semibold">YL &lt; 250:</span>
-                <input
-                  type="number"
-                  min={0}
-                  value={l250 ?? 0}
-                  onChange={(e) => {
-                    const val = Math.max(0, Number(e.target.value));
-                    setL250(val);
-                    const rec: DailySalesRecord = {
-                      v: salesV, b: bbV, sold: totalSoldToday, bb: totalBbToday, pdmV, pdm: totalPdmToday,
-                      yl, ar, l250: val, l300, jwpm: jwpCustom, jwp: effectiveJwp, absen, frek
-                    };
-                    onSaveTkuInput(tkuIdx, rec);
-                  }}
-                  className="w-11 text-center font-mono font-bold text-rose-700 dark:text-rose-300 bg-white dark:bg-neutral-900 border border-rose-300 dark:border-rose-700 rounded py-0.5 focus:ring-2 focus:ring-rose-500 focus:outline-none"
-                />
-              </div>
-
-              {/* 7. YL < 300 */}
-              <div className="flex items-center gap-1.5 text-xs bg-amber-50/60 dark:bg-amber-950/30 px-2.5 py-1.5 rounded-xl border border-amber-200/60 dark:border-amber-900/40">
-                <span className="text-amber-700 dark:text-amber-400 font-semibold">YL &lt; 300:</span>
-                <input
-                  type="number"
-                  min={0}
-                  value={l300 ?? 0}
-                  onChange={(e) => {
-                    const val = Math.max(0, Number(e.target.value));
-                    setL300(val);
-                    const rec: DailySalesRecord = {
-                      v: salesV, b: bbV, sold: totalSoldToday, bb: totalBbToday, pdmV, pdm: totalPdmToday,
-                      yl, ar, l250, l300: val, jwpm: jwpCustom, jwp: effectiveJwp, absen, frek
-                    };
-                    onSaveTkuInput(tkuIdx, rec);
-                  }}
-                  className="w-11 text-center font-mono font-bold text-amber-700 dark:text-amber-300 bg-white dark:bg-neutral-900 border border-amber-300 dark:border-amber-700 rounded py-0.5 focus:ring-2 focus:ring-amber-500 focus:outline-none"
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* CARD UTAMA: DETAIL REALISASI HARIAN & OPERASIONAL */}
-          {(() => {
-            let periodTotalSold = 0;
-            let periodTotalYo = 0;
-            let periodTotalOm = 0;
-            let periodTotalOs = 0;
-            let periodTotalYt = 0;
-            let periodTotalBb = 0;
-            let periodTotalPdm = 0;
-            let periodTotalAbs = 0;
-            let periodTotalFrk = 0;
-
-            realisasiDaysToShow.forEach(d => {
-              if (d <= day) {
-                const r = getDayActualAllVariants(d);
-                const opsD = getDailyOpsDetail(d);
-                periodTotalYo += r.yo;
-                periodTotalOm += r.om;
-                periodTotalOs += r.os;
-                periodTotalYt += r.yt;
-                periodTotalSold += r.total;
-                periodTotalBb += opsD.bb;
-                periodTotalPdm += opsD.pdm;
-                periodTotalAbs += opsD.absen;
-                periodTotalFrk += opsD.frek;
-              }
-            });
-
-            return (
-              <div className="p-6 bg-white dark:bg-neutral-900 rounded-3xl border border-neutral-200 dark:border-neutral-800 shadow-sm space-y-4">
-                {/* Header Card dengan Pill Switcher M1..M5 & Satu Bulan */}
-                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-neutral-100 dark:border-neutral-800">
-                  <div>
-                    <h3 className="text-base font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
-                      <CalendarRange className="w-5 h-5 text-emerald-600" />
-                      Detail Realisasi Harian &amp; Operasional &bull; {realisasiPeriodTitle}
-                    </h3>
-                    <p className="text-xs text-neutral-500 mt-0.5">
-                      Rincian penjualan riil 4 varian, BB, PDM, Absensi, JWP, dan s/YL per hari kerja dalam {realisasiPeriodTitle}
-                    </p>
-                  </div>
-
-                  {/* Switcher M1, M2, M3, M4, M5, Satu Bulan */}
-                  <div className="inline-flex rounded-xl bg-neutral-100 dark:bg-neutral-800 p-1 border border-neutral-200 dark:border-neutral-700 shrink-0">
-                    {[
-                      { id: 'M1', label: 'M1' },
-                      { id: 'M2', label: 'M2' },
-                      { id: 'M3', label: 'M3' },
-                      { id: 'M4', label: 'M4' },
-                      { id: 'M5', label: 'M5' },
-                      { id: 'ALL', label: 'Satu Bulan' }
-                    ].map((p) => (
-                      <button
-                        key={p.id}
-                        onClick={() => {
-                          setSelectedRealisasiPeriod(p.id as any);
-                          setInlineEditDay(null);
-                        }}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                          selectedRealisasiPeriod === p.id
-                            ? 'bg-emerald-600 text-white shadow-xs'
-                            : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
-                        }`}
-                      >
-                        {p.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Tabel Realisasi & Operasional dengan Inline Editing */}
-                <div className="overflow-x-auto max-h-[650px] border border-neutral-200 dark:border-neutral-800 rounded-2xl">
-                  <table className="w-full text-xs text-left border-collapse min-w-[1380px]">
-                    <thead className="sticky top-0 z-10 bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 font-semibold shadow-2xs">
-                      <tr className="border-b border-neutral-200 dark:border-neutral-700">
-                        <th className="py-2.5 px-3">Tanggal</th>
-                        <th className="py-2.5 px-2">Hari</th>
-                        <th className="py-2.5 px-2 text-right" style={{ color: VARIANTS[0].color }}>YO</th>
-                        <th className="py-2.5 px-2 text-right" style={{ color: VARIANTS[1].color }}>OM</th>
-                        <th className="py-2.5 px-2 text-right" style={{ color: VARIANTS[2].color }}>OS</th>
-                        <th className="py-2.5 px-2 text-right" style={{ color: VARIANTS[3].color }}>YT</th>
-                        <th className="py-2.5 px-2.5 text-right font-bold text-neutral-900 dark:text-white">Realisasi Harian</th>
-                        <th className="py-2.5 px-2.5 text-right text-emerald-600 dark:text-emerald-400 font-bold">Akumulasi</th>
-                        <th className="py-2.5 px-2.5 text-right font-bold">Rata-rata/hr</th>
-                        <th className="py-2.5 px-2.5 text-right">vs Tgt</th>
-                        <th className="py-2.5 px-2.5 text-right">vs LM</th>
-                        <th className="py-2.5 px-2.5 text-right">vs LY</th>
-                        <th className="py-2.5 px-2 text-right border-l border-neutral-200 dark:border-neutral-700 text-amber-600 font-bold">BB</th>
-                        <th className="py-2.5 px-2 text-right text-amber-600">% BB</th>
-                        <th className="py-2.5 px-2.5 text-right text-indigo-600 font-bold">PDM</th>
-                        <th className="py-2.5 px-1.5 text-right border-l border-neutral-200 dark:border-neutral-700">Abs</th>
-                        <th className="py-2.5 px-1.5 text-right">Frk</th>
-                        <th className="py-2.5 px-2 text-right border-l border-neutral-200 dark:border-neutral-700 text-sky-600">JWP</th>
-                        <th className="py-2.5 px-2.5 text-right font-bold text-rose-600">s/YL</th>
-                        <th className="py-2.5 px-2 text-right font-bold text-rose-600 border-l border-neutral-200 dark:border-neutral-700">YL &lt; 250</th>
-                        <th className="py-2.5 px-2 text-right font-bold text-amber-600">YL &lt; 300</th>
-                        <th className="py-2.5 px-3 text-center border-l border-neutral-200 dark:border-neutral-700 font-semibold text-neutral-900 dark:text-white">Aksi</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800 font-mono">
-                      {realisasiDaysToShow.map(d => {
-                        const dateObj = new Date(PY, PM0, d);
-                        const dayName = dateObj.toLocaleDateString('id-ID', { weekday: 'long' });
-                        const isSun = dateObj.getDay() === 0;
-                        const isToday = d === day;
-                        const isPast = d <= day;
-                        const isEditing = inlineEditDay === d;
-
-                        const r = isPast ? getDayActualAllVariants(d) : { yo: 0, om: 0, os: 0, yt: 0, total: 0 };
-                        const cum = isPast ? getCumActualUpToDay(d) : { cumYo: 0, cumOm: 0, cumOs: 0, cumYt: 0, cumTotal: 0 };
-                        const opsD = getDailyOpsDetail(d);
-
-                        const dayDivider = d;
-                        const avgDaily = (isPast && dayDivider > 0) ? Math.round(cum.cumTotal / dayDivider) : 0;
-
-                        const vsTgPct = (isPast && targetHarian > 0) ? (avgDaily / targetHarian) : 0;
-                        const vsTgDiff = avgDaily - targetHarian;
-
-                        const vsBlPct = (isPast && blHarian > 0) ? (avgDaily / blHarian) : 0;
-                        const vsBlDiff = avgDaily - blHarian;
-
-                        const vsTyPct = (isPast && tyHarian > 0) ? (avgDaily / tyHarian) : 0;
-                        const vsTyDiff = avgDaily - tyHarian;
-
-                        // Editing values calculation
-                        const editTotalSold = inlineEditV[0] + inlineEditV[1] + inlineEditV[2] + inlineEditV[3];
-                        const editPdm = editTotalSold + inlineEditBb;
-                        const editPctBb = (editTotalSold + inlineEditBb) > 0 ? inlineEditBb / (editTotalSold + inlineEditBb) : 0;
-
-                        return (
-                          <tr
-                            key={d}
-                            className={`transition-colors ${
-                              isEditing
-                                ? 'bg-amber-50/70 dark:bg-amber-950/30'
-                                : isToday
-                                ? 'bg-emerald-50/50 dark:bg-emerald-950/20 font-semibold'
-                                : isSun
-                                ? 'bg-amber-50/30 dark:bg-amber-950/10 text-neutral-400'
-                                : 'hover:bg-neutral-50 dark:hover:bg-neutral-800/40'
-                            }`}
-                          >
-                            <td className="py-2 px-3">
-                              <div className="flex items-center gap-1.5 font-bold font-sans">
-                                <span>Tgl {d}</span>
-                                {isToday && (
-                                  <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-emerald-600 text-white font-semibold">
-                                    Hari Ini
-                                  </span>
-                                )}
-                              </div>
-                            </td>
-                            <td className="py-2 px-2 font-sans">
-                              <span className={isSun ? 'text-amber-600 font-medium' : 'text-neutral-600 dark:text-neutral-400'}>
-                                {dayName} {isSun ? '(Libur)' : ''}
-                              </span>
-                            </td>
-
-                            {/* Varian YO */}
-                            <td className="py-1.5 px-1.5 text-right font-bold" style={{ color: VARIANTS[0].color }}>
-                              {isEditing ? (
-                                <input
-                                  type="number"
-                                  min={0}
-                                  value={inlineEditV[0] || ''}
-                                  placeholder="0"
-                                  onChange={(e) => setInlineEditV([Math.max(0, Number(e.target.value)), inlineEditV[1], inlineEditV[2], inlineEditV[3]])}
-                                  className="w-16 px-1.5 py-1 text-right rounded-lg border border-rose-400 bg-white dark:bg-neutral-900 font-mono font-bold text-xs focus:ring-2 focus:ring-rose-500 focus:outline-none shadow-2xs"
-                                />
-                              ) : isPast ? (
-                                formatNumber(r.yo)
-                              ) : (
-                                <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>
-                              )}
-                            </td>
-
-                            {/* Varian OM */}
-                            <td className="py-1.5 px-1.5 text-right font-bold" style={{ color: VARIANTS[1].color }}>
-                              {isEditing ? (
-                                <input
-                                  type="number"
-                                  min={0}
-                                  value={inlineEditV[1] || ''}
-                                  placeholder="0"
-                                  onChange={(e) => setInlineEditV([inlineEditV[0], Math.max(0, Number(e.target.value)), inlineEditV[2], inlineEditV[3]])}
-                                  className="w-16 px-1.5 py-1 text-right rounded-lg border border-sky-400 bg-white dark:bg-neutral-900 font-mono font-bold text-xs focus:ring-2 focus:ring-sky-500 focus:outline-none shadow-2xs"
-                                />
-                              ) : isPast ? (
-                                formatNumber(r.om)
-                              ) : (
-                                <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>
-                              )}
-                            </td>
-
-                            {/* Varian OS */}
-                            <td className="py-1.5 px-1.5 text-right font-bold" style={{ color: VARIANTS[2].color }}>
-                              {isEditing ? (
-                                <input
-                                  type="number"
-                                  min={0}
-                                  value={inlineEditV[2] || ''}
-                                  placeholder="0"
-                                  onChange={(e) => setInlineEditV([inlineEditV[0], inlineEditV[1], Math.max(0, Number(e.target.value)), inlineEditV[3]])}
-                                  className="w-16 px-1.5 py-1 text-right rounded-lg border border-amber-400 bg-white dark:bg-neutral-900 font-mono font-bold text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none shadow-2xs"
-                                />
-                              ) : isPast ? (
-                                formatNumber(r.os)
-                              ) : (
-                                <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>
-                              )}
-                            </td>
-
-                            {/* Varian YT */}
-                            <td className="py-1.5 px-1.5 text-right font-bold" style={{ color: VARIANTS[3].color }}>
-                              {isEditing ? (
-                                <input
-                                  type="number"
-                                  min={0}
-                                  value={inlineEditV[3] || ''}
-                                  placeholder="0"
-                                  onChange={(e) => setInlineEditV([inlineEditV[0], inlineEditV[1], inlineEditV[2], Math.max(0, Number(e.target.value))])}
-                                  className="w-16 px-1.5 py-1 text-right rounded-lg border border-emerald-400 bg-white dark:bg-neutral-900 font-mono font-bold text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none shadow-2xs"
-                                />
-                              ) : isPast ? (
-                                formatNumber(r.yt)
-                              ) : (
-                                <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>
-                              )}
-                            </td>
-
-                            {/* Total Realisasi Harian */}
-                            <td className="py-2 px-2.5 text-right font-bold text-neutral-900 dark:text-neutral-100">
-                              {isEditing ? (
-                                `${formatNumber(editTotalSold)} btl`
-                              ) : isPast ? (
-                                `${formatNumber(r.total)} btl`
-                              ) : (
-                                <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>
-                              )}
-                            </td>
-
-                            {/* Akumulasi */}
-                            <td className="py-2 px-2.5 text-right font-bold text-emerald-600 dark:text-emerald-400">
-                              {isPast ? `${formatNumber(cum.cumTotal)} btl` : <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>}
-                            </td>
-
-                            {/* Rata-rata/hr */}
-                            <td className="py-2 px-2.5 text-right font-bold text-neutral-900 dark:text-neutral-100">
-                              {isPast ? `${formatNumber(avgDaily)} btl` : <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>}
-                            </td>
-
-                            {/* vs Target */}
-                            <td className="py-2 px-2.5 text-right font-bold">
-                              {isPast ? (
-                                <>
-                                  <span className={vsTgPct >= 1 ? 'text-emerald-600' : 'text-rose-600'}>
-                                    {formatPercent(vsTgPct)}
-                                  </span>
-                                  <div className={`text-[10px] ${vsTgDiff >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                                    {vsTgDiff >= 0 ? `+${formatNumber(vsTgDiff)}` : formatNumber(vsTgDiff)}
-                                  </div>
-                                </>
-                              ) : (
-                                <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>
-                              )}
-                            </td>
-
-                            {/* vs LM */}
-                            <td className="py-2 px-2.5 text-right font-semibold">
-                              {isPast ? (
-                                <>
-                                  <span className={vsBlPct >= 1 ? 'text-emerald-600' : 'text-neutral-600 dark:text-neutral-400'}>
-                                    {formatPercent(vsBlPct)}
-                                  </span>
-                                  <div className={`text-[10px] ${vsBlDiff >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                                    {vsBlDiff >= 0 ? `+${formatNumber(vsBlDiff)}` : formatNumber(vsBlDiff)}
-                                  </div>
-                                </>
-                              ) : (
-                                <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>
-                              )}
-                            </td>
-
-                            {/* vs LY */}
-                            <td className="py-2 px-2.5 text-right font-semibold">
-                              {isPast ? (
-                                <>
-                                  <span className={vsTyPct >= 1 ? 'text-emerald-600' : 'text-neutral-600 dark:text-neutral-400'}>
-                                    {formatPercent(vsTyPct)}
-                                  </span>
-                                  <div className={`text-[10px] ${vsTyDiff >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                                    {vsTyDiff >= 0 ? `+${formatNumber(vsTyDiff)}` : formatNumber(vsTyDiff)}
-                                  </div>
-                                </>
-                              ) : (
-                                <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>
-                              )}
-                            </td>
-
-                            {/* BB */}
-                            <td className="py-1.5 px-2 text-right font-bold text-amber-600 border-l border-neutral-200 dark:border-neutral-700">
-                              {isEditing ? (
-                                <input
-                                  type="number"
-                                  min={0}
-                                  value={inlineEditBb || ''}
-                                  placeholder="0"
-                                  onChange={(e) => setInlineEditBb(Math.max(0, Number(e.target.value)))}
-                                  className="w-14 px-1.5 py-1 text-right rounded-lg border border-amber-400 bg-white dark:bg-neutral-900 font-mono font-bold text-xs text-amber-600 focus:ring-2 focus:ring-amber-500 focus:outline-none shadow-2xs"
-                                />
-                              ) : isPast ? (
-                                formatNumber(opsD.bb)
-                              ) : (
-                                <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>
-                              )}
-                            </td>
-
-                            {/* % BB */}
-                            <td className="py-2 px-2 text-right text-amber-600">
-                              {isEditing ? (
-                                formatPercent(editPctBb)
-                              ) : isPast ? (
-                                formatPercent(opsD.pctBb)
-                              ) : (
-                                <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>
-                              )}
-                            </td>
-
-                            {/* PDM */}
-                            <td className="py-2 px-2.5 text-right font-bold text-indigo-600">
-                              {isEditing ? (
-                                formatNumber(editPdm)
-                              ) : isPast ? (
-                                formatNumber(opsD.pdm)
-                              ) : (
-                                <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>
-                              )}
-                            </td>
-
-                            {/* Absen */}
-                            <td className="py-1.5 px-1.5 text-right border-l border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400">
-                              {isEditing ? (
-                                <input
-                                  type="number"
-                                  min={0}
-                                  value={inlineEditAbsen || ''}
-                                  placeholder="0"
-                                  onChange={(e) => setInlineEditAbsen(Math.max(0, Number(e.target.value)))}
-                                  className="w-12 px-1 py-1 text-right rounded-lg border border-neutral-400 bg-white dark:bg-neutral-900 font-mono text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none shadow-2xs"
-                                />
-                              ) : isPast && opsD.absen > 0 ? (
-                                opsD.absen
-                              ) : (
-                                '—'
-                              )}
-                            </td>
-
-                            {/* Frek */}
-                            <td className="py-1.5 px-1.5 text-right text-neutral-600 dark:text-neutral-400">
-                              {isEditing ? (
-                                <input
-                                  type="number"
-                                  min={0}
-                                  value={inlineEditFrek || ''}
-                                  placeholder="0"
-                                  onChange={(e) => setInlineEditFrek(Math.max(0, Number(e.target.value)))}
-                                  className="w-12 px-1 py-1 text-right rounded-lg border border-neutral-400 bg-white dark:bg-neutral-900 font-mono text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none shadow-2xs"
-                                />
-                              ) : isPast && opsD.frek > 0 ? (
-                                opsD.frek
-                              ) : (
-                                '—'
-                              )}
-                            </td>
-
-                            {/* JWP */}
-                            <td className="py-2 px-2 text-right text-sky-600 border-l border-neutral-200 dark:border-neutral-700">
-                              {isPast ? formatNumber(opsD.cumJwp) : <span className="text-neutral-300 dark:text-neutral-700 font-normal">—</span>}
-                            </td>
-
-                            {/* s/YL */}
-                            <td className="py-2 px-2.5 text-right font-bold text-rose-600">
-                              {isPast && opsD.sylDay !== null ? formatNumber(opsD.sylDay) : '—'}
-                            </td>
-                            {/* YL < 250 */}
-                            <td className="py-2 px-2 text-right font-bold text-rose-600 border-l border-neutral-200 dark:border-neutral-700">
-                              {isEditing ? (
-                                <input
-                                  type="number"
-                                  min={0}
-                                  value={inlineEditL250 || ""}
-                                  placeholder="0"
-                                  onChange={(e) => setInlineEditL250(Math.max(0, Number(e.target.value)))}
-                                  className="w-12 px-1 py-1 text-right rounded-lg border border-rose-400 bg-white dark:bg-neutral-900 font-mono font-bold text-xs focus:ring-2 focus:ring-rose-500 focus:outline-none shadow-2xs"
-                                />
-                              ) : isPast ? (
-                                formatNumber(opsD.l250)
-                              ) : (
-                                "—"
-                              )}
-                            </td>
-                            {/* YL < 300 */}
-                            <td className="py-2 px-2 text-right font-bold text-amber-600">
-                              {isEditing ? (
-                                <input
-                                  type="number"
-                                  min={0}
-                                  value={inlineEditL300 || ""}
-                                  placeholder="0"
-                                  onChange={(e) => setInlineEditL300(Math.max(0, Number(e.target.value)))}
-                                  className="w-12 px-1 py-1 text-right rounded-lg border border-amber-400 bg-white dark:bg-neutral-900 font-mono font-bold text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none shadow-2xs"
-                                />
-                              ) : isPast ? (
-                                formatNumber(opsD.l300)
-                              ) : (
-                                "—"
-                              )}
-                            </td>
-
-                            {/* Kolom Aksi Edit / Simpan */}
-                            <td className="py-1.5 px-2.5 text-center border-l border-neutral-200 dark:border-neutral-700">
-                              {isEditing ? (
-                                <div className="flex items-center justify-center gap-1.5">
-                                  <button
-                                    onClick={() => handleSaveInlineEdit(d)}
-                                    className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1 shadow-xs transition-colors cursor-pointer"
-                                    title="Simpan perubahan"
-                                  >
-                                    <Save className="w-3.5 h-3.5" />
-                                    <span>Simpan</span>
-                                  </button>
-                                  <button
-                                    onClick={handleCancelInlineEdit}
-                                    className="px-2 py-1 rounded-lg bg-neutral-200 dark:bg-neutral-700 hover:bg-neutral-300 text-neutral-700 dark:text-neutral-300 text-xs font-semibold transition-colors cursor-pointer"
-                                    title="Batal edit"
-                                  >
-                                    Batal
-                                  </button>
-                                </div>
-                              ) : (
-                                <button
-                                  onClick={() => handleStartInlineEdit(d)}
-                                  disabled={d > day}
-                                  className={`px-2.5 py-1 rounded-lg border text-xs font-semibold flex items-center gap-1 transition-all mx-auto ${
-                                    d > day
-                                      ? 'opacity-30 cursor-not-allowed border-neutral-200 text-neutral-400'
-                                      : 'border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-300 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300 shadow-2xs cursor-pointer'
-                                  }`}
-                                  title={`Edit data riil Tgl ${d}`}
-                                >
-                                  <Edit3 className="w-3 h-3 text-emerald-600" />
-                                  <span>Edit</span>
-                                </button>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                    <tfoot className="sticky bottom-0 bg-neutral-100 dark:bg-neutral-800 font-mono font-bold border-t-2 border-neutral-300 dark:border-neutral-700 shadow-xs">
-                      <tr>
-                        <td colSpan={2} className="py-3 px-3 font-sans text-neutral-800 dark:text-neutral-200">
-                          Total {selectedRealisasiPeriod === 'ALL' ? ("Satu Bulan (" + period.label + ")") : realisasiPeriodTitle}
-                        </td>
-                        <td className="py-3 px-1.5 text-right" style={{ color: VARIANTS[0].color }}>{formatNumber(periodTotalYo)}</td>
-                        <td className="py-3 px-1.5 text-right" style={{ color: VARIANTS[1].color }}>{formatNumber(periodTotalOm)}</td>
-                        <td className="py-3 px-1.5 text-right" style={{ color: VARIANTS[2].color }}>{formatNumber(periodTotalOs)}</td>
-                        <td className="py-3 px-1.5 text-right" style={{ color: VARIANTS[3].color }}>{formatNumber(periodTotalYt)}</td>
-                        <td className="py-3 px-2.5 text-right text-emerald-600 text-sm">{formatNumber(periodTotalSold)} btl</td>
-                        <td colSpan={5} className="py-3 px-2.5 text-right text-neutral-500 font-normal font-sans text-xs">
-                          Rata: <strong className="text-neutral-900 dark:text-white font-mono">{formatNumber(divider > 0 ? Math.round(periodTotalSold / divider) : 0)} btl/hr</strong>
-                        </td>
-                        <td className="py-3 px-2 text-right text-amber-600 border-l border-neutral-200 dark:border-neutral-700">{formatNumber(periodTotalBb)}</td>
-                        <td className="py-3 px-2 text-right text-amber-600">{formatPercent(periodTotalSold + periodTotalBb > 0 ? periodTotalBb / (periodTotalSold + periodTotalBb) : 0)}</td>
-                        <td className="py-3 px-2.5 text-right text-indigo-600">{formatNumber(periodTotalPdm)}</td>
-                        <td className="py-3 px-1.5 text-right border-l border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400">{Math.max(periodTotalAbs, tku.absenYl || 0)}</td>
-                        <td className="py-3 px-1.5 text-right text-neutral-600 dark:text-neutral-400">{Math.max(periodTotalFrk, tku.frekuensiAbsen || 0)}</td>
-                        <td className="py-3 px-2 text-right text-sky-600 border-l border-neutral-200 dark:border-neutral-700">{formatNumber(tkuOps.jwp)}</td>
-                        <td className="py-3 px-2.5 text-right text-rose-600 font-bold">{tkuOps.syl !== null ? formatNumber(tkuOps.syl) : '—'}</td>
-                        <td className="py-3 px-2 text-right text-rose-600 border-l border-neutral-200 dark:border-neutral-700 font-bold">{tku.l250 ?? l250 ?? 0}</td>
-                        <td className="py-3 px-2 text-right text-amber-600 font-bold">{tku.l300 ?? l300 ?? 0}</td>
-                        <td className="py-3 px-2.5 text-center border-l border-neutral-200 dark:border-neutral-700 text-[10px] text-neutral-400 font-sans font-normal">
-                          {realisasiDaysToShow.length} Hari
-                        </td>
-                      </tr>
-                    </tfoot>
-                  </table>
-                </div>
-              </div>
-            );
-          })()}
-        </div>
-      )}
+      {activeSubMenu === 'realisasi' && renderRealisasiSection()}
 
 
       {/* ========================================================================= */}
@@ -2216,16 +2562,13 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
             {/* Header Kartu */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-neutral-100 dark:border-neutral-800">
               <div>
-                <h2 className="text-base md:text-lg font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
-                  <TrendingUp className="w-5 h-5 text-rose-600 dark:text-rose-400" />
-                  <span>Rangkuman Penjualan & Kondisi Operasional</span>
+                <h2 className="text-base md:text-lg leading-tight break-words font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
+                  <TrendingUp className="w-5 h-5 text-brand-600 dark:text-brand-400" />
+                  <span>Rekap Penjualan &amp; Kondisi TKU</span>
                 </h2>
-                <p className="text-xs text-neutral-500 mt-0.5">
-                  Capaian target penjualan 4 varian, perbandingan waktu, dan indikator operasional {tku.nama}
-                </p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                <span className="text-xs px-2.5 py-1 rounded-full font-semibold bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-400 border border-rose-200/60 dark:border-rose-900/40">
+                <span className="text-xs px-2.5 py-1 rounded-full font-semibold bg-brand-50 text-brand-700 dark:bg-brand-950/50 dark:text-brand-400 border border-brand-200/60 dark:border-brand-900/40">
                   {tku.nama} (Rayon {tku.rayon})
                 </span>
                 <span className="text-xs font-mono px-2.5 py-1 rounded-full bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300">
@@ -2241,33 +2584,33 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
               </span>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
                 {/* 1.1 Akumulasi Penjualan */}
-                <div className="p-4 rounded-2xl bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/70 dark:border-neutral-800 flex flex-col justify-between">
+                <div className="p-4 rounded-2xl bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/70 dark:border-neutral-800 flex flex-col justify-between min-w-0 h-full">
                   <div>
                     <span className="text-xs font-medium text-neutral-500 block mb-1">Akumulasi Penjualan</span>
-                    <div className="text-2xl font-bold font-mono tracking-tight text-neutral-900 dark:text-neutral-100">
+                    <div className="text-xl sm:text-2xl font-bold font-mono tracking-tight break-words text-neutral-900 dark:text-neutral-100">
                       {formatNumber(tkuAkmTotal)} <span className="text-xs font-sans font-normal text-neutral-400">btl</span>
                     </div>
                   </div>
-                  <div className="mt-3 pt-2.5 border-t border-neutral-200/60 dark:border-neutral-700/60 text-xs flex items-center justify-between">
+                  <div className="mt-3 pt-2.5 border-t border-neutral-200/60 dark:border-neutral-700/60 text-xs flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5">
                     <span className="text-neutral-500">Rata-rata / hari</span>
-                    <span className="font-mono font-bold text-rose-600 dark:text-rose-400">
+                    <span className="font-mono font-bold text-brand-600 dark:text-brand-400">
                       {formatNumber(tkuDailyAvg)} btl
                     </span>
                   </div>
                 </div>
 
                 {/* 1.2 vs Target Bulan Ini */}
-                <div className="p-4 rounded-2xl bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/70 dark:border-neutral-800 flex flex-col justify-between">
+                <div className="p-4 rounded-2xl bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/70 dark:border-neutral-800 flex flex-col justify-between min-w-0 h-full">
                   <div>
-                    <div className="flex items-center justify-between text-neutral-500 mb-1">
+                    <div className="flex items-start justify-between gap-2 text-neutral-500 mb-1 min-w-0">
                       <span className="text-xs font-medium">Capaian vs Target</span>
-                      <Target className="w-3.5 h-3.5 text-neutral-400" />
+                      <Target className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
                     </div>
-                    <div className={`text-2xl font-bold font-mono tracking-tight ${getStatusClass(diffVsTarget)}`}>
+                    <div className={`text-xl sm:text-2xl font-bold font-mono tracking-tight break-words ${getStatusClass(diffVsTarget)}`}>
                       {formatPercent(targetPct)}
                     </div>
                   </div>
-                  <div className="mt-3 pt-2.5 border-t border-neutral-200/60 dark:border-neutral-700/60 text-xs flex items-center justify-between">
+                  <div className="mt-3 pt-2.5 border-t border-neutral-200/60 dark:border-neutral-700/60 text-xs flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5">
                     <span className="text-neutral-500">Target: {formatNumber(targetHarian)}/hr</span>
                     <span className={`font-mono font-bold ${getStatusClass(diffVsTarget)}`}>
                       {formatDiff(diffVsTarget)} btl
@@ -2276,17 +2619,17 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
                 </div>
 
                 {/* 1.3 vs Bulan Lalu (LM) */}
-                <div className="p-4 rounded-2xl bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/70 dark:border-neutral-800 flex flex-col justify-between">
+                <div className="p-4 rounded-2xl bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/70 dark:border-neutral-800 flex flex-col justify-between min-w-0 h-full">
                   <div>
-                    <div className="flex items-center justify-between text-neutral-500 mb-1">
+                    <div className="flex items-start justify-between gap-2 text-neutral-500 mb-1 min-w-0">
                       <span className="text-xs font-medium">vs Bulan Lalu (LM)</span>
-                      <Calendar className="w-3.5 h-3.5 text-neutral-400" />
+                      <Calendar className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
                     </div>
-                    <div className={`text-2xl font-bold font-mono tracking-tight ${getStatusClass(blDiff)}`}>
+                    <div className={`text-xl sm:text-2xl font-bold font-mono tracking-tight break-words ${getStatusClass(blDiff)}`}>
                       {formatPercent(blPct)}
                     </div>
                   </div>
-                  <div className="mt-3 pt-2.5 border-t border-neutral-200/60 dark:border-neutral-700/60 text-xs flex items-center justify-between">
+                  <div className="mt-3 pt-2.5 border-t border-neutral-200/60 dark:border-neutral-700/60 text-xs flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5">
                     <span className="text-neutral-500">LM: {formatNumber(blHarian)}/hr</span>
                     <span className={`font-mono font-bold ${getStatusClass(blDiff)}`}>
                       {formatDiff(blDiff)} btl
@@ -2295,17 +2638,17 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
                 </div>
 
                 {/* 1.4 vs Tahun Lalu (LY) */}
-                <div className="p-4 rounded-2xl bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/70 dark:border-neutral-800 flex flex-col justify-between">
+                <div className="p-4 rounded-2xl bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/70 dark:border-neutral-800 flex flex-col justify-between min-w-0 h-full">
                   <div>
-                    <div className="flex items-center justify-between text-neutral-500 mb-1">
+                    <div className="flex items-start justify-between gap-2 text-neutral-500 mb-1 min-w-0">
                       <span className="text-xs font-medium">vs Tahun Lalu (LY)</span>
                       <Clock className="w-3.5 h-3.5 text-neutral-400" />
                     </div>
-                    <div className={`text-2xl font-bold font-mono tracking-tight ${getStatusClass(tyDiff)}`}>
+                    <div className={`text-xl sm:text-2xl font-bold font-mono tracking-tight break-words ${getStatusClass(tyDiff)}`}>
                       {formatPercent(tyPct)}
                     </div>
                   </div>
-                  <div className="mt-3 pt-2.5 border-t border-neutral-200/60 dark:border-neutral-700/60 text-xs flex items-center justify-between">
+                  <div className="mt-3 pt-2.5 border-t border-neutral-200/60 dark:border-neutral-700/60 text-xs flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5">
                     <span className="text-neutral-500">LY: {formatNumber(tyHarian)}/hr</span>
                     <span className={`font-mono font-bold ${getStatusClass(tyDiff)}`}>
                       {formatDiff(tyDiff)} btl
@@ -2320,91 +2663,91 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
               <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 dark:text-neutral-500 block mb-3">
                 2. Kondisi Operasional (Absensi, JWP, S/YL, PDM, YL &lt; 250, YL &lt; 300)
               </span>
-              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3 font-mono">
+              <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-3 font-mono items-stretch">
                 {/* 2.1 Jumlah YL */}
-                <div className="p-3.5 rounded-2xl bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/60 dark:border-neutral-800">
-                  <span className="text-[11px] font-sans text-neutral-500 block mb-1">Jumlah YL</span>
-                  <span className="text-base md:text-lg font-bold text-neutral-900 dark:text-neutral-100">
+                <div className="p-3.5 rounded-2xl bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/60 dark:border-neutral-800 flex flex-col justify-between min-w-0 h-full overflow-hidden">
+                  <span className="text-[11px] leading-tight font-sans text-neutral-500 block mb-1 truncate">Jumlah YL</span>
+                  <span className="text-base md:text-lg leading-tight truncate font-bold text-neutral-900 dark:text-neutral-100">
                     {yl} <span className="text-xs font-normal text-neutral-400 font-sans">/ {ar} area</span>
                   </span>
-                  <span className="text-[10px] text-neutral-400 block mt-1 font-sans">
+                  <span className="text-[10px] text-neutral-400 block mt-auto pt-1 leading-snug font-sans truncate" title={`Cover: ${ar > 0 ? ((yl / ar) * 100).toFixed(0) : 100}%`}>
                     Cover: {ar > 0 ? ((yl / ar) * 100).toFixed(0) : 100}%
                   </span>
                 </div>
 
                 {/* 2.2 Absensi (Absen dulu, baru Freq) */}
-                <div className="p-3.5 rounded-2xl bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/60 dark:border-neutral-800">
-                  <span className="text-[11px] font-sans text-neutral-500 block mb-1">Absensi</span>
-                  <span className="text-base md:text-lg font-bold text-neutral-900 dark:text-neutral-100">
+                <div className="p-3.5 rounded-2xl bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/60 dark:border-neutral-800 flex flex-col justify-between min-w-0 h-full overflow-hidden">
+                  <span className="text-[11px] leading-tight font-sans text-neutral-500 block mb-1 truncate">Absensi</span>
+                  <span className="text-base md:text-lg leading-tight truncate font-bold text-neutral-900 dark:text-neutral-100">
                     {akmOps.akmAbsen} <span className="text-xs font-normal text-neutral-400 font-sans">absen</span>
                   </span>
-                  <span className="text-[10px] text-neutral-600 dark:text-neutral-300 block mt-1 font-sans">
+                  <span className="text-[10px] text-neutral-600 dark:text-neutral-300 block mt-auto pt-1 leading-snug font-sans truncate">
                     Freq: <strong className="text-neutral-900 dark:text-neutral-100 font-mono font-bold">{akmOps.akmFrek}</strong> kali
                   </span>
                 </div>
 
                 {/* 2.3 Akumulasi JWP (dengan EWP di bawahnya) */}
-                <div className="p-3.5 rounded-2xl bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/60 dark:border-neutral-800">
-                  <span className="text-[11px] font-sans text-neutral-500 block mb-1">Akumulasi JWP</span>
-                  <span className="text-base md:text-lg font-bold text-sky-600 dark:text-sky-400">
+                <div className="p-3.5 rounded-2xl bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/60 dark:border-neutral-800 flex flex-col justify-between min-w-0 h-full overflow-hidden">
+                  <span className="text-[11px] leading-tight font-sans text-neutral-500 block mb-1 truncate">Akumulasi JWP</span>
+                  <span className="text-base md:text-lg leading-tight truncate font-bold text-sky-600 dark:text-sky-400">
                     {formatNumber(effectiveJwp)}
                   </span>
-                  <span className="text-[10px] text-neutral-600 dark:text-neutral-300 block mt-1 font-sans">
-                    EWP: <strong className="text-neutral-900 dark:text-neutral-100 font-mono font-bold">{effectiveJwp > 0 ? ((akmOps.akmFrek / effectiveJwp) * 100).toFixed(1) : '0.0'}%</strong> ({akmOps.akmFrek}÷{formatNumber(effectiveJwp)})
+                  <span className="text-[10px] text-neutral-600 dark:text-neutral-300 block mt-auto pt-1 leading-snug font-sans truncate" title={`EWP: ${effectiveJwp > 0 ? ((akmOps.akmFrek / effectiveJwp) * 100).toFixed(1) : '0.0'}% (${akmOps.akmFrek}÷${formatNumber(effectiveJwp)})`}>
+                    EWP: <strong className="text-neutral-900 dark:text-neutral-100 font-mono font-bold">{effectiveJwp > 0 ? ((akmOps.akmFrek / effectiveJwp) * 100).toFixed(1) : '0.0'}%</strong> <span className="text-neutral-400 font-normal">({akmOps.akmFrek}/{formatNumber(effectiveJwp)})</span>
                   </span>
                 </div>
 
                 {/* 2.4 s/YL */}
-                <div className="p-3.5 rounded-2xl bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/60 dark:border-neutral-800">
-                  <span className="text-[11px] font-sans text-neutral-500 block mb-1">s/YL</span>
-                  <span className="text-base md:text-lg font-bold text-rose-600 dark:text-rose-400">
+                <div className="p-3.5 rounded-2xl bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/60 dark:border-neutral-800 flex flex-col justify-between min-w-0 h-full overflow-hidden">
+                  <span className="text-[11px] leading-tight font-sans text-neutral-500 block mb-1 truncate">s/YL</span>
+                  <span className="text-base md:text-lg leading-tight truncate font-bold text-brand-600 dark:text-brand-400">
                     {formatNumber(Math.round(syl !== null ? syl : (effectiveJwp > 0 ? (tkuAkmTotal / effectiveJwp) : 0)))} <span className="text-xs font-normal text-neutral-400 font-sans">btl</span>
                   </span>
-                  <span className="text-[10px] text-neutral-500 dark:text-neutral-400 block mt-1 font-sans">
+                  <span className="text-[10px] text-neutral-500 dark:text-neutral-400 block mt-auto pt-1 leading-snug font-sans truncate">
                     Akm Pjl &divide; Akm JWP
                   </span>
                 </div>
 
                 {/* 2.5 Akm PDM (Terupdate) */}
-                <div className="p-3.5 rounded-2xl bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/60 dark:border-neutral-800">
-                  <span className="text-[11px] font-sans text-neutral-500 block mb-1">Akm PDM</span>
-                  <span className="text-base md:text-lg font-bold text-indigo-600 dark:text-indigo-400">
+                <div className="p-3.5 rounded-2xl bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/60 dark:border-neutral-800 flex flex-col justify-between min-w-0 h-full overflow-hidden">
+                  <span className="text-[11px] leading-tight font-sans text-neutral-500 block mb-1 truncate">Akm PDM</span>
+                  <span className="text-base md:text-lg leading-tight truncate font-bold text-indigo-600 dark:text-indigo-400">
                     {formatNumber(akmOps.akmPdm)} <span className="text-xs font-normal text-neutral-400 font-sans">btl</span>
                   </span>
-                  <span className="text-[10px] text-neutral-400 block mt-1 font-sans">
+                  <span className="text-[10px] text-neutral-400 block mt-auto pt-1 leading-snug font-sans truncate">
                     Rata: {divider > 0 ? (akmOps.akmPdm / divider).toFixed(1) : 0} btl/hr
                   </span>
                 </div>
 
                 {/* 2.6 Akm BB */}
-                <div className="p-3.5 rounded-2xl bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/60 dark:border-neutral-800">
-                  <span className="text-[11px] font-sans text-neutral-500 block mb-1">Akm BB</span>
-                  <span className="text-base md:text-lg font-bold text-neutral-900 dark:text-neutral-100">
+                <div className="p-3.5 rounded-2xl bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/60 dark:border-neutral-800 flex flex-col justify-between min-w-0 h-full overflow-hidden">
+                  <span className="text-[11px] leading-tight font-sans text-neutral-500 block mb-1 truncate">Akm BB</span>
+                  <span className="text-base md:text-lg leading-tight truncate font-bold text-neutral-900 dark:text-neutral-100">
                     {formatNumber(akmOps.akmBb)} <span className="text-xs font-normal text-neutral-400 font-sans">btl</span>
                   </span>
-                  <span className="text-[10px] text-neutral-400 block mt-1 font-sans">
+                  <span className="text-[10px] text-neutral-400 block mt-auto pt-1 leading-snug font-sans truncate">
                     % BB: {formatPercent(akmBbRatio)}
                   </span>
                 </div>
 
                 {/* 2.7 YL < 250 */}
-                <div className="p-3.5 rounded-2xl bg-rose-50/60 dark:bg-rose-950/30 border border-rose-200/60 dark:border-rose-900/40">
-                  <span className="text-[11px] font-sans text-rose-700 dark:text-rose-400 font-medium block mb-1">YL &lt; 250</span>
-                  <span className="text-base md:text-lg font-bold text-rose-700 dark:text-rose-400">
-                    {tku.l250 ?? l250 ?? 0} <span className="text-xs font-normal text-rose-500 font-sans">YL</span>
+                <div className="p-3.5 rounded-2xl bg-red-50/60 dark:bg-red-950/30 border border-red-200/60 dark:border-red-900/40 flex flex-col justify-between min-w-0 h-full overflow-hidden">
+                  <span className="text-[11px] leading-tight font-sans text-red-700 dark:text-red-400 font-medium block mb-1 truncate">YL &lt; 250</span>
+                  <span className="text-base md:text-lg leading-tight truncate font-bold text-red-700 dark:text-red-400">
+                    {tku.l250 ?? l250 ?? 0} <span className="text-xs font-normal text-red-500 font-sans">YL</span>
                   </span>
-                  <span className="text-[10px] text-rose-600 dark:text-rose-400 block mt-1 font-sans">
+                  <span className="text-[10px] text-red-600 dark:text-red-400 block mt-auto pt-1 leading-snug font-sans truncate">
                     Rasio: {formatPercent(yl > 0 ? (tku.l250 ?? l250 ?? 0) / yl : 0)}
                   </span>
                 </div>
 
                 {/* 2.8 YL < 300 */}
-                <div className="p-3.5 rounded-2xl bg-amber-50/60 dark:bg-amber-950/30 border border-amber-200/60 dark:border-amber-900/40">
-                  <span className="text-[11px] font-sans text-amber-700 dark:text-amber-400 font-medium block mb-1">YL &lt; 300</span>
-                  <span className="text-base md:text-lg font-bold text-amber-700 dark:text-amber-400">
+                <div className="p-3.5 rounded-2xl bg-amber-50/60 dark:bg-amber-950/30 border border-amber-200/60 dark:border-amber-900/40 flex flex-col justify-between min-w-0 h-full overflow-hidden">
+                  <span className="text-[11px] leading-tight font-sans text-amber-700 dark:text-amber-400 font-medium block mb-1 truncate">YL &lt; 300</span>
+                  <span className="text-base md:text-lg leading-tight truncate font-bold text-amber-700 dark:text-amber-400">
                     {tku.l300 ?? l300 ?? 0} <span className="text-xs font-normal text-amber-500 font-sans">YL</span>
                   </span>
-                  <span className="text-[10px] text-amber-600 dark:text-amber-400 block mt-1 font-sans">
+                  <span className="text-[10px] text-amber-600 dark:text-amber-400 block mt-auto pt-1 leading-snug font-sans truncate">
                     Rasio: {formatPercent(yl > 0 ? (tku.l300 ?? l300 ?? 0) / yl : 0)}
                   </span>
                 </div>
@@ -2417,12 +2760,9 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
                 <h3 className="text-base font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
-                  <Layers className="w-5 h-5 text-rose-600" />
-                  Rincian Penjualan & Evaluasi per Varian Produk
+                  <Layers className="w-5 h-5 text-brand-600" />
+                  Komposisi Varian
                 </h3>
-                <p className="text-xs text-neutral-500">
-                  Performa masing-masing varian (Yakult Original, Mangga, Stroberi, dan Light) terhadap target, bulan lalu (LM), dan tahun lalu (LY)
-                </p>
               </div>
             </div>
 
@@ -2464,7 +2804,7 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
                         {formatNumber(item.vTg)}
                       </td>
                       <td className="py-3 px-3 text-right font-bold">
-                        <span className={item.pctTg >= 1 ? 'text-emerald-600' : 'text-rose-600'}>
+                        <span className={item.pctTg >= 1 ? 'text-emerald-600' : 'text-red-600'}>
                           {formatPercent(item.pctTg)}
                         </span>
                       </td>
@@ -2479,7 +2819,7 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
                         </span>
                       </td>
                       <td className="py-3 px-3 text-right font-bold">
-                        <span className={item.diffTg >= 0 ? 'text-emerald-600' : 'text-rose-600'}>
+                        <span className={item.diffTg >= 0 ? 'text-emerald-600' : 'text-red-600'}>
                           {item.diffTg >= 0 ? `+${formatNumber(item.diffTg)}` : formatNumber(item.diffTg)}
                         </span>
                       </td>
@@ -2491,17 +2831,17 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
                     <td className="py-3 px-3 font-sans">Total Seluruh Varian</td>
                     <td className="py-3 px-3 text-right text-neutral-900 dark:text-neutral-100">{formatNumber(tkuAkmTotal)}</td>
                     <td className="py-3 px-3 text-right">100.0%</td>
-                    <td className="py-3 px-3 text-right text-rose-600 dark:text-rose-400">{formatNumber(tkuDailyAvg)}</td>
+                    <td className="py-3 px-3 text-right text-brand-600 dark:text-brand-400">{formatNumber(tkuDailyAvg)}</td>
                     <td className="py-3 px-3 text-right">{formatNumber(targetHarian)}</td>
                     <td className="py-3 px-3 text-right">
-                      <span className={targetPct >= 1 ? 'text-emerald-600' : 'text-rose-600'}>
+                      <span className={targetPct >= 1 ? 'text-emerald-600' : 'text-red-600'}>
                         {formatPercent(targetPct)}
                       </span>
                     </td>
                     <td className="py-3 px-3 text-right">{formatPercent(blPct)}</td>
                     <td className="py-3 px-3 text-right">{formatPercent(tyPct)}</td>
                     <td className="py-3 px-3 text-right">
-                      <span className={diffVsTarget >= 0 ? 'text-emerald-600' : 'text-rose-600'}>
+                      <span className={diffVsTarget >= 0 ? 'text-emerald-600' : 'text-red-600'}>
                         {diffVsTarget >= 0 ? `+${formatNumber(diffVsTarget)}` : formatNumber(diffVsTarget)}
                       </span>
                     </td>
@@ -2512,393 +2852,30 @@ export const TkuInputView: React.FC<TkuInputViewProps> = ({
           </div>
 
           {/* Grafik Tren Penjualan Harian TKU */}
-          <div className="p-6 bg-white dark:bg-neutral-900 rounded-3xl border border-neutral-200 dark:border-neutral-800 shadow-sm space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div>
-                <h3 className="text-base font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
-                  <BarChart3 className="w-5 h-5 text-rose-600" />
-                  Grafik Tren Penjualan Harian & Garis Target TKU (Tanggal 1 s/d {day})
-                </h3>
-                <p className="text-xs text-neutral-500">
-                  Garis merah: Penjualan riil &bull; Garis putus-putus: Target (putih/hitam), LM (kuning), LY (biru) &bull; Batang pink: BB &bull; Penjualan (atas) dan BB (bawah) punya sumbu Y sendiri, tanggal sama
-                </p>
-              </div>
-
-              {/* Legend */}
-              <div className="flex flex-wrap items-center gap-2.5 sm:gap-3 text-xs font-medium">
-                <div className="flex items-center gap-1.5">
-                  <span className="w-3 h-0.5 bg-rose-600 rounded-full inline-block" />
-                  <span className="text-neutral-600 dark:text-neutral-300">Penjualan</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="w-3 h-0.5 bg-neutral-900 dark:bg-white rounded-full inline-block border-b border-dashed border-neutral-900 dark:border-white" />
-                  <span className="text-neutral-600 dark:text-neutral-300">Target ({formatNumber(targetHarian)}/hr)</span>
-                </div>
-                {blHarian > 0 && (
-                  <div className="flex items-center gap-1.5">
-                    <span className="w-3 h-0.5 bg-[#eab308] rounded-full inline-block border-b border-dashed border-[#eab308]" />
-                    <span className="text-neutral-600 dark:text-neutral-300">LM ({formatNumber(blHarian)}/hr)</span>
-                  </div>
-                )}
-                {tyHarian > 0 && (
-                  <div className="flex items-center gap-1.5">
-                    <span className="w-3 h-0.5 bg-[#3b82f6] rounded-full inline-block border-b border-dashed border-[#3b82f6]" />
-                    <span className="text-neutral-600 dark:text-neutral-300">LY ({formatNumber(tyHarian)}/hr)</span>
-                  </div>
-                )}
-                <div className="flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 bg-[#ec4899] rounded inline-block" />
-                  <span className="text-neutral-600 dark:text-neutral-300">BB</span>
-                </div>
-              </div>
+          <div className="p-4 sm:p-6 bg-white dark:bg-neutral-900 rounded-3xl border border-neutral-200 dark:border-neutral-800 shadow-sm space-y-4 min-w-0">
+            <div>
+              <h3 className="text-base font-bold text-neutral-900 dark:text-neutral-100 flex items-start gap-2">
+                <BarChart3 className="w-5 h-5 text-brand-600 shrink-0 mt-0.5" />
+                <span>Tren Penjualan</span>
+              </h3>
             </div>
-
-            {/* Hover detail notification */}
-            {hoveredTrend && (
-              <div className="p-3 bg-neutral-50 dark:bg-neutral-800/80 rounded-2xl border border-neutral-200 dark:border-neutral-700/60 flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
-                <div className="flex items-center gap-2">
-                  <span className="px-2 py-0.5 rounded-lg bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300 font-bold font-sans">
-                    Tgl {hoveredTrend.day} {period.namaBulanPendek}
-                  </span>
-                  <span>Penjualan: <strong className="text-rose-600 dark:text-rose-400 font-bold">{formatNumber(hoveredTrend.val)} btl</strong></span>
-                </div>
-                <div className="flex flex-wrap items-center gap-3">
-                  <span className="text-neutral-900 dark:text-white font-medium">
-                    Target: <strong>{formatNumber(hoveredTrend.effTarget)}</strong> ({hoveredTrend.diff >= 0 ? `+${formatNumber(hoveredTrend.diff)}` : formatNumber(hoveredTrend.diff)})
-                  </span>
-                  {hoveredTrend.effBL > 0 && (
-                    <span className="text-yellow-600 dark:text-yellow-400 font-medium">
-                      LM: <strong>{formatNumber(hoveredTrend.effBL)}</strong>
-                    </span>
-                  )}
-                  {hoveredTrend.effTY > 0 && (
-                    <span className="text-sky-600 dark:text-sky-400 font-medium">
-                      LY: <strong>{formatNumber(hoveredTrend.effTY)}</strong>
-                    </span>
-                  )}
-                  {(hoveredTrend.bb !== undefined && hoveredTrend.bb > 0) && (
-                    <span className="text-pink-600 dark:text-pink-400 font-medium">
-                      BB: <strong>{formatNumber(hoveredTrend.bb)} btl</strong>
-                    </span>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* SVG Interactive Trend Chart */}
-            <div className="relative w-full overflow-x-auto pt-2">
-              {(() => {
-                const chartHeight = 480;
-                const chartWidth = 900;
-                const padding = { top: 25, right: 35, bottom: 40, left: 55 };
-                const innerWidth = chartWidth - padding.left - padding.right;
-                const innerHeight = 300; // line graph area height
-
-                const maxDayVal = Math.max(
-                  ...trendDays.map(t => t.sold),
-                  ...trendDays.map(t => Math.max(t.effTarget, t.effBL, t.effTY)),
-                  targetHarian * 2.2,
-                  blHarian * 2.2,
-                  tyHarian * 2.2,
-                  1
-                );
-                const maxVal = maxDayVal * 1.15;
-                // Dua panel bertumpuk, sumbu X sama: penjualan (atas, kelipatan 1k) & BB (bawah, sumbu Y sendiri)
-                const axis = makeUnitAxis(maxVal, innerHeight, 1000);
-                const salesBottom = padding.top + innerHeight;
-                const bbH = 110;       // tinggi panel BB (menyambung di bawah panel penjualan)
-                const bbUsable = 90;   // tinggi pakai (sisanya jarak atas agar label tidak bertabrakan)
-                const bbAxis = makeNiceAxis(Math.max(0, ...trendDays.map(t => t.bb || 0)), bbUsable);
-                const plotBottom = salesBottom + bbH;
-
-                const totalPointsCount = trendDays.length;
-                const xInset = 14; // jarak tgl 1 dari garis sumbu Y
-                const getX = (idx: number) => padding.left + xInset + (idx / Math.max(totalPointsCount - 1, 1)) * (innerWidth - 2 * xInset);
-                const getY = (v: number) => padding.top + innerHeight - axis.scale(v) * innerHeight;
-
-                // Active day segments (excluding Sundays) for drawing trend reference polylines
-                const activeDaySegments: { idx: number; data: typeof trendDays[0] }[][] = [];
-                let curActSeg: { idx: number; data: typeof trendDays[0] }[] = [];
-                trendDays.forEach((t, idx) => {
-                  if (!t.isSun) {
-                    curActSeg.push({ idx, data: t });
-                  } else {
-                    if (curActSeg.length > 0) {
-                      activeDaySegments.push(curActSeg);
-                      curActSeg = [];
-                    }
-                  }
-                });
-                if (curActSeg.length > 0) {
-                  activeDaySegments.push(curActSeg);
-                }
-
-                // Sales active points (all days with transactions where sold > 0 and not Sunday)
-                const activeSalesPoints = trendDays
-                  .map((t, idx) => ({ x: getX(idx), y: getY(t.sold), data: t, idx }))
-                  .filter(p => p.data.sold > 0 && !p.data.isSun);
-
-                // Group into continuous realization line segments
-                const salesSegments: { x: number; y: number; data: typeof trendDays[0]; idx: number }[][] = [];
-                if (activeSalesPoints.length > 0) {
-                  salesSegments.push(activeSalesPoints);
-                }
-
-                const gridVals = axis.ticks;
-
-                return (
-                  <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} className="w-full min-w-[760px] h-auto bg-neutral-50 dark:bg-neutral-800/40 rounded-2xl border border-neutral-200 dark:border-neutral-800">
-                    <defs>
-                      <linearGradient id="tkuSalesGradient" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#e11d48" stopOpacity="0.25" />
-                        <stop offset="100%" stopColor="#e11d48" stopOpacity="0.0" />
-                      </linearGradient>
-                    </defs>
-
-                    {/* Sunday vertical shaded markers (Libur Operasional) */}
-                    {trendDays.map((t, idx) => {
-                      if (!t.isSun) return null;
-                      return (
-                        <g key={`sun-band-${t.day}`}>
-                          <rect
-                            x={getX(idx) - 8}
-                            y={padding.top}
-                            width={16}
-                            height={innerHeight + bbH}
-                            fill="currentColor"
-                            className="text-neutral-200/50 dark:text-neutral-800/60 pointer-events-none"
-                            rx={2}
-                          />
-                          <text
-                            x={getX(idx)}
-                            y={padding.top - 6}
-                            fontSize="8"
-                            textAnchor="middle"
-                            className="fill-rose-500 font-semibold"
-                          >
-                            Libur
-                          </text>
-                        </g>
-                      );
-                    })}
-
-                    {/* Horizontal Grid lines */}
-                    {gridVals.map(gv => (
-                      <g key={`grid-${gv}`}>
-                        <line
-                          x1={padding.left}
-                          x2={padding.left + innerWidth}
-                          y1={getY(gv)}
-                          y2={getY(gv)}
-                          stroke="currentColor"
-                          className="text-neutral-200 dark:text-neutral-700/60"
-                          strokeDasharray="3 3"
-                        />
-                        <text
-                          x={padding.left - 6}
-                          y={getY(gv) + 3}
-                          fontSize="9"
-                          textAnchor="end"
-                          className="fill-neutral-400 font-mono"
-                        >
-                          {axis.showLabel(gv) ? formatAxisLabel(gv) : ''}
-                        </text>
-                      </g>
-                    ))}
-
-                    {/* Panel BB (bawah): garis bantu & label sumbu Y sendiri */}
-                    {bbAxis.ticks.map(tv => (
-                      <g key={`bb-${tv}`}>
-                        <line x1={padding.left} x2={padding.left + innerWidth} y1={plotBottom - bbAxis.scale(tv) * bbUsable} y2={plotBottom - bbAxis.scale(tv) * bbUsable} stroke="currentColor" className="text-neutral-200 dark:text-neutral-700/60" strokeDasharray="3 3" />
-                        <text x={padding.left - 6} y={plotBottom - bbAxis.scale(tv) * bbUsable + 3} fontSize="9" textAnchor="end" fill="#ec4899" className="font-mono">
-                          {bbAxis.showLabel(tv) ? formatAxisLabel(tv) : ''}
-                        </text>
-                      </g>
-                    ))}
-
-                    {/* Sumbu X (dasar), pemisah panel & sumbu Y */}
-                    <line x1={padding.left} x2={padding.left + innerWidth} y1={salesBottom} y2={salesBottom} stroke="currentColor" className="text-neutral-400 dark:text-neutral-500" />
-                    <line x1={padding.left} x2={padding.left + innerWidth} y1={plotBottom} y2={plotBottom} stroke="currentColor" className="text-neutral-400 dark:text-neutral-500" />
-                    <line x1={padding.left} x2={padding.left} y1={padding.top} y2={plotBottom} stroke="currentColor" className="text-neutral-400 dark:text-neutral-500" />
-                    <text x={padding.left - 6} y={salesBottom + 3} fontSize="9" textAnchor="end" className="fill-neutral-400 font-mono">0</text>
-                    <text x={padding.left - 6} y={plotBottom + 3} fontSize="9" textAnchor="end" fill="#ec4899" className="font-mono">0</text>
-                    <text x={padding.left - 6} y={padding.top - 8} fontSize="9" textAnchor="end" className="fill-neutral-500 font-semibold">Penjualan (btl)</text>
-                    <text x={padding.left + 8} y={salesBottom + 13} fontSize="9" textAnchor="start" fill="#ec4899" className="font-semibold">Balik Botol (btl)</text>
-
-                    {/* Target Reference Line (White in Dark Mode, Black in Light Mode) */}
-                    {targetHarian > 0 && activeSalesPoints.length > 0 && (
-                      <polyline
-                        points={activeSalesPoints.map(p => `${p.x},${getY(p.data.effTarget)}`).join(' ')}
-                        fill="none"
-                        stroke="currentColor"
-                        className="text-neutral-900 dark:text-white"
-                        strokeWidth="1.75"
-                        strokeDasharray="5 4"
-                      />
-                    )}
-
-                    {/* Bulan Lalu (LM) Reference Line (Yellow) */}
-                    {blHarian > 0 && activeSalesPoints.length > 0 && (
-                      <polyline
-                        points={activeSalesPoints.map(p => `${p.x},${getY(p.data.effBL)}`).join(' ')}
-                        fill="none"
-                        stroke="#eab308"
-                        strokeWidth="1.6"
-                        strokeDasharray="4 4"
-                      />
-                    )}
-
-                    {/* Tahun Lalu (LY) Reference Line (Blue) */}
-                    {tyHarian > 0 && activeSalesPoints.length > 0 && (
-                      <polyline
-                        points={activeSalesPoints.map(p => `${p.x},${getY(p.data.effTY)}`).join(' ')}
-                        fill="none"
-                        stroke="#3b82f6"
-                        strokeWidth="1.6"
-                        strokeDasharray="3 3"
-                      />
-                    )}
-
-                    {/* BB Bars at Bottom (Pink) */}
-                    {trendDays.map((t, idx) => {
-                      const bbVal = t.bb || 0;
-                      if (bbVal <= 0) return null;
-                      const barHeight = bbAxis.scale(bbVal) * bbUsable;
-                      const barX = getX(idx) - 6;
-                      const barY = plotBottom - barHeight;
-                      return (
-                        <rect
-                          key={`bb-bar-${t.day}`}
-                          x={barX}
-                          y={barY}
-                          width={12}
-                          height={Math.max(2, barHeight)}
-                          fill="#ec4899"
-                          className="hover:fill-pink-600 transition-colors cursor-pointer opacity-60"
-                          rx={2}
-                          onMouseEnter={() => setHoveredTrend({
-                            day: t.day,
-                            val: t.sold,
-                            bb: bbVal,
-                            mult: t.mult,
-                            effTarget: t.effTarget,
-                            effBL: t.effBL,
-                            effTY: t.effTY,
-                            diff: t.diff,
-                            x: getX(idx),
-                            y: barY
-                          })}
-                          onMouseLeave={() => setHoveredTrend(null)}
-                        />
-                      );
-                    })}
-
-                    {/* Area fill for sales */}
-                    {salesSegments.map((seg, sIdx) => {
-                      if (seg.length === 0) return null;
-                      const pathStr = seg.map((p, pIdx) => `${pIdx === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
-                      const areaStr = `${pathStr} L ${seg[seg.length - 1].x} ${padding.top + innerHeight} L ${seg[0].x} ${padding.top + innerHeight} Z`;
-                      return (
-                        <path key={`area-${sIdx}`} d={areaStr} fill="url(#tkuSalesGradient)" />
-                      );
-                    })}
-
-                    {/* Sales Polyline */}
-                    {salesSegments.map((seg, sIdx) => {
-                      const pts = seg.map(p => `${p.x},${p.y}`).join(' ');
-                      return (
-                        <polyline
-                          key={`sales-line-${sIdx}`}
-                          fill="none"
-                          stroke="#e11d48"
-                          strokeWidth="2.5"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          points={pts}
-                        />
-                      );
-                    })}
-
-                    {/* Interactive Circles for each day */}
-                    {trendDays.map((t, idx) => {
-                      const x = getX(idx);
-                      const y = t.sold > 0 ? getY(t.sold) : padding.top + innerHeight;
-                      const isTargetMet = t.sold >= t.effTarget && t.effTarget > 0;
-                      const isCurrentToday = t.day === day;
-
-                      return (
-                        <g 
-                          key={`pt-group-${t.day}`}
-                          className="cursor-pointer"
-                          onMouseEnter={() => setHoveredTrend({ 
-                            day: t.day, 
-                            val: t.sold, 
-                            bb: t.bb,
-                            mult: t.mult, 
-                            effTarget: t.effTarget, 
-                            effBL: t.effBL, 
-                            effTY: t.effTY, 
-                            diff: t.diff,
-                            x,
-                            y 
-                          })}
-                          onMouseLeave={() => setHoveredTrend(null)}
-                        >
-                          {/* Invisible larger hover target */}
-                          <rect
-                            x={x - 10}
-                            y={padding.top}
-                            width={20}
-                            height={innerHeight + bbH}
-                            fill="transparent"
-                          />
-
-                          {t.sold > 0 && (
-                            <circle
-                              cx={x}
-                              cy={y}
-                              r={isCurrentToday ? 5.5 : 4}
-                              className={`transition-all duration-150 hover:r-6 ${
-                                isTargetMet 
-                                  ? 'fill-emerald-500 stroke-white dark:stroke-neutral-900' 
-                                  : 'fill-rose-600 stroke-white dark:stroke-neutral-900'
-                              }`}
-                              strokeWidth="2"
-                            />
-                          )}
-
-                          {/* X-axis date label */}
-                          {isCurrentToday && (
-                            <circle
-                              cx={x}
-                              cy={plotBottom + 20}
-                              r={6.5}
-                              fill="#be123c"
-                              opacity={0.15}
-                            />
-                          )}
-                          <text
-                            x={x}
-                            y={plotBottom + 23}
-                            textAnchor="middle"
-                            fontSize={isCurrentToday ? "9" : "8"}
-                            className={`font-mono ${
-                              isCurrentToday
-                                ? 'fill-rose-600 font-extrabold'
-                                : t.isSun
-                                ? 'fill-rose-500 font-bold'
-                                : 'fill-neutral-500 font-medium'
-                            }`}
-                          >
-                            {t.day}
-                          </text>
-                        </g>
-                      );
-                    })}
-                  </svg>
-                );
-              })()}
-            </div>
+            <TrendChart
+              salesUnit={1000}
+              today={day}
+              year={activeYear}
+              monthIndex={activeMonth}
+              monthShort={period.namaBulanPendek}
+              days={trendDays.map(t => ({
+                day: t.day,
+                sold: t.sold,
+                target: t.effTarget,
+                lm: t.effBL,
+                ly: t.effTY,
+                bb: t.bb || 0,
+                isSun: t.isSun,
+                mult: t.mult,
+              }))}
+            />
           </div>
         </div>
       )}

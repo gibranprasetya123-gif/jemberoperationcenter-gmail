@@ -27,13 +27,13 @@ export const ToastContainer: React.FC<ToastProps> = ({ toasts, onDismiss }) => {
               isSuccess
                 ? 'bg-emerald-50/95 dark:bg-emerald-950/95 border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-100'
                 : isError
-                ? 'bg-rose-50/95 dark:bg-rose-950/95 border-rose-200 dark:border-rose-800 text-rose-900 dark:text-rose-100'
+                ? 'bg-red-50/95 dark:bg-red-950/95 border-red-200 dark:border-red-800 text-red-900 dark:text-red-100'
                 : 'bg-white/95 dark:bg-neutral-900/95 border-neutral-200 dark:border-neutral-800 text-neutral-900 dark:text-neutral-100'
             }`}
           >
             <div className="flex items-center gap-2.5 min-w-0">
               {isSuccess && <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />}
-              {isError && <AlertCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />}
+              {isError && <AlertCircle className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0" />}
               {!isSuccess && !isError && <Info className="w-4 h-4 text-sky-600 dark:text-sky-400 shrink-0" />}
               <p className="text-xs font-medium leading-relaxed truncate">{toast.message}</p>
             </div>

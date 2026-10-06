@@ -43,7 +43,7 @@ export const ADMIN_MENUS: MenuItem[] = [
   { id: "Dashboard", label: "Dashboard", short: "Dashboard", icon: BarChart3, group: "Pantau" },
   { id: "Penjualan Harian", label: "Penjualan Harian", short: "Harian", icon: CalendarCheck, group: "Pantau" },
   { id: "Evaluasi", label: "Evaluasi", short: "Evaluasi", icon: TrendingUp, group: "Pantau" },
-  { id: "Breakdown & Realisasi", label: "Breakdown dan Realisasi", short: "Breakdown & Realisasi", icon: GitCompare, group: "Pantau" },
+  { id: "Breakdown & Realisasi", label: "Breakdown & Realisasi", short: "Breakdown & Realisasi", icon: GitCompare, group: "Pantau" },
   { id: "Target", label: "Target", short: "Target", icon: Target, group: "Kelola" },
   { id: "Profil TKU", label: "Profil TKU", short: "Profil", icon: Users, group: "Kelola" },
   { id: "Arsip", label: "Arsip", short: "Arsip", icon: Archive, group: "Kelola" },
@@ -51,10 +51,10 @@ export const ADMIN_MENUS: MenuItem[] = [
 ];
 
 export const TKU_MENUS: MenuItem[] = [
-  { id: "ringkasan", label: "Ringkasan TKU", short: "Ringkasan", icon: BarChart3, group: "Menu Utama TKU" },
-  { id: "input", label: "Input Penjualan Hari Ini", short: "Input", icon: CalendarCheck, group: "Menu Utama TKU" },
-  { id: "breakdown", label: "Breakdown Rencana", short: "Breakdown", icon: Target, group: "Menu Utama TKU" },
-  { id: "realisasi", label: "Realisasi Penjualan", short: "Realisasi", icon: GitCompare, group: "Menu Utama TKU" },
+  { id: "ringkasan", label: "Ringkasan", short: "Ringkasan", icon: BarChart3, group: "Menu Utama TKU" },
+  { id: "input", label: "Penjualan", short: "Penjualan", icon: CalendarCheck, group: "Menu Utama TKU" },
+  { id: "breakdown", label: "Breakdown", short: "Breakdown", icon: Target, group: "Menu Utama TKU" },
+  { id: "realisasi", label: "Realisasi", short: "Realisasi", icon: GitCompare, group: "Menu Utama TKU" },
 ];
 
 // Backwards-compatible export
@@ -90,11 +90,11 @@ const NavList: React.FC<{
                   aria-current={active ? 'page' : undefined}
                   className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-left transition-colors ${
                     active
-                      ? 'bg-rose-50 text-rose-700 font-semibold dark:bg-rose-950/40 dark:text-rose-300'
+                      ? 'bg-brand-50 text-brand-700 font-semibold dark:bg-brand-950/40 dark:text-brand-300'
                       : 'text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800/70 dark:hover:text-neutral-100'
                   }`}
                 >
-                  <Icon className={`w-[18px] h-[18px] shrink-0 ${active ? 'text-rose-600 dark:text-rose-400' : 'text-neutral-400'}`} />
+                  <Icon className={`w-[18px] h-[18px] shrink-0 ${active ? 'text-brand-600 dark:text-brand-400' : 'text-neutral-400'}`} />
                   <span className="truncate">{item.label}</span>
                 </button>
               );
@@ -134,7 +134,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <div className="flex items-center gap-2 min-w-0">
             {isTku ? (
               <div className="flex items-center gap-1.5 truncate">
-                <Building2 className="w-4 h-4 text-rose-600 shrink-0" />
+                <Building2 className="w-4 h-4 text-brand-600 shrink-0" />
                 <span className="text-xs font-bold text-neutral-800 dark:text-neutral-200 truncate">
                   {activeTkuName ? `${activeTkuName} (R${activeTkuRayon || 1})` : 'Menu TKU'}
                 </span>
@@ -142,7 +142,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             ) : (
               <>
                 <span className="text-xs font-bold text-neutral-800 dark:text-neutral-200 uppercase tracking-wider">Navigasi</span>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-400 font-semibold">{tkusCount} Unit</span>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-brand-50 text-brand-700 dark:bg-brand-950/50 dark:text-brand-400 font-semibold">{tkusCount} Unit</span>
               </>
             )}
           </div>
@@ -151,7 +151,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             onClick={onCollapse}
             aria-label="Tutup menu samping"
             title="Tutup menu (Lebarkan tampilan layar)"
-            className="flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-bold bg-neutral-100 hover:bg-rose-50 dark:bg-neutral-800 dark:hover:bg-rose-950/50 text-neutral-600 hover:text-rose-600 dark:text-neutral-300 dark:hover:text-rose-400 transition-colors border border-neutral-200 dark:border-neutral-700 shadow-2xs shrink-0"
+            className="flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-bold bg-neutral-100 hover:bg-brand-50 dark:bg-neutral-800 dark:hover:bg-brand-950/50 text-neutral-600 hover:text-brand-600 dark:text-neutral-300 dark:hover:text-brand-400 transition-colors border border-neutral-200 dark:border-neutral-700 shadow-2xs shrink-0"
           >
             <X className="w-3.5 h-3.5" />
             <span className="text-[11px]">Tutup</span>
@@ -172,7 +172,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <button
             onClick={onCollapse}
             title="Tutup menu (Lebarkan tampilan layar)"
-            className="flex items-center gap-1 text-neutral-500 hover:text-rose-600 dark:text-neutral-400 dark:hover:text-rose-400 transition-colors font-medium"
+            className="flex items-center gap-1 text-neutral-500 hover:text-brand-600 dark:text-neutral-400 dark:hover:text-brand-400 transition-colors font-medium"
           >
             <X className="w-3.5 h-3.5" />
             <span>Tutup Menu</span>
@@ -197,14 +197,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 key={id}
                 onClick={() => onSelectMenu(id)}
                 aria-current={active ? 'page' : undefined}
-                className={`flex flex-col items-center justify-center gap-1 text-[11px] font-medium transition-colors ${
-                  active ? 'text-rose-600 dark:text-rose-400' : 'text-neutral-500 dark:text-neutral-400'
+                className={`flex flex-col items-center justify-center gap-1 min-w-0 px-1 text-[11px] leading-none font-medium transition-colors ${
+                  active ? 'text-brand-600 dark:text-brand-400' : 'text-neutral-500 dark:text-neutral-400'
                 }`}
               >
-                <span className={`px-4 py-1 rounded-full transition-colors ${active ? 'bg-rose-50 dark:bg-rose-950/50' : ''}`}>
+                <span className={`px-3.5 py-1 rounded-full transition-colors ${active ? 'bg-brand-50 dark:bg-brand-950/50' : ''}`}>
                   <Icon className="w-5 h-5" />
                 </span>
-                {item.short}
+                <span className="max-w-full truncate">{item.short}</span>
               </button>
             );
           })}
@@ -212,11 +212,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
           {!isTku && (
             <button
               onClick={onOpenDrawer}
-              className={`flex flex-col items-center justify-center gap-1 text-[11px] font-medium transition-colors ${
-                inMore ? 'text-rose-600 dark:text-rose-400' : 'text-neutral-500 dark:text-neutral-400'
+              className={`flex flex-col items-center justify-center gap-1 min-w-0 px-1 text-[11px] leading-none font-medium transition-colors ${
+                inMore ? 'text-brand-600 dark:text-brand-400' : 'text-neutral-500 dark:text-neutral-400'
               }`}
             >
-              <span className={`px-4 py-1 rounded-full transition-colors ${inMore ? 'bg-rose-50 dark:bg-rose-950/50' : ''}`}>
+              <span className={`px-3.5 py-1 rounded-full transition-colors ${inMore ? 'bg-brand-50 dark:bg-brand-950/50' : ''}`}>
                 <LayoutGrid className="w-5 h-5" />
               </span>
               Lainnya

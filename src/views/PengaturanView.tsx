@@ -1,3 +1,4 @@
+import { useConfirm } from '../components/ConfirmDialog';
 import React, { useState, useEffect } from 'react';
 import { 
   Settings, 
@@ -17,10 +18,12 @@ import {
   Unlock, 
   ShieldCheck, 
   RefreshCw,
+  Link2,
   CalendarDays,
   X 
 } from 'lucide-react';
 import { AppState } from '../types';
+import { buildInviteLink } from '../services/supabaseInvite';
 import {
   testSupabaseConnection,
   getPeriodInfo,
@@ -31,6 +34,7 @@ import {
   formatNumber,
   CloudInspectResult
 } from '../services/storage';
+import { DEFAULT_SUPABASE_CONFIG } from '../config/defaultSupabase';
 import { PembagiHariControl } from '../components/PembagiHariControl';
 
 interface PengaturanViewProps {
@@ -68,6 +72,7 @@ export const PengaturanView: React.FC<PengaturanViewProps> = ({
   isSyncing = false,
   syncStatus = 'idle'
 }) => {
+  const { ask, dialog } = useConfirm();
   const isLocked = Boolean(state.supabaseConfig?.locked);
   const [sbUrl, setSbUrl] = useState(state.supabaseConfig.u || '');
   const [sbKey, setSbKey] = useState(state.supabaseConfig.k || '');
@@ -183,11 +188,19 @@ export const PengaturanView: React.FC<PengaturanViewProps> = ({
       showToast('Buka kunci konfigurasi terlebih dahulu untuk memutuskan cloud', 'error');
       return;
     }
-    setSbUrl('');
-    setSbKey('');
-    setSbTestResult(null);
-    onUpdateSupabase('', '', false);
-    showToast('Konfigurasi Supabase dihapus (aplikasi memakai mode offline lokal)', 'info');
+    ask({
+      title: 'Putuskan Database Cloud?',
+      message: 'Apakah Anda yakin ingin menghapus konfigurasi Supabase dari perangkat ini?\nAplikasi akan beralih ke penyimpanan lokal (offline).',
+      confirmLabel: 'Putuskan Cloud',
+      tone: 'warning',
+      onConfirm: () => {
+        setSbUrl('');
+        setSbKey('');
+        setSbTestResult(null);
+        onUpdateSupabase('', '', false);
+        showToast('Konfigurasi Supabase dihapus (aplikasi memakai mode offline lokal)', 'info');
+      }
+    });
   };
 
   const handleTestSb = async () => {
@@ -242,11 +255,8 @@ export const PengaturanView: React.FC<PengaturanViewProps> = ({
       {/* Top Banner */}
       <div className="p-5 bg-white dark:bg-neutral-900 rounded-2xl border border-neutral-200 dark:border-neutral-800 shadow-sm">
         <h1 className="text-xl font-bold tracking-tight text-neutral-900 dark:text-neutral-100">
-          Pengaturan Sistem & Konfigurasi
+          Pengaturan
         </h1>
-        <p className="text-xs text-neutral-500">
-          Kelola pembagi realisasi penjualan, PIN autentikasi, database cloud, serta cadangan dan pemulihan data
-        </p>
       </div>
 
       {/* Pengaturan Pembagi Hari & Tanggal Penjualan */}
@@ -254,13 +264,9 @@ export const PengaturanView: React.FC<PengaturanViewProps> = ({
       {onSwitchPeriod && (
         <div className="p-5 bg-white dark:bg-neutral-900 rounded-2xl border border-neutral-200 dark:border-neutral-800 shadow-sm space-y-4">
           <div className="flex items-center gap-2">
-            <CalendarDays className="w-4 h-4 text-rose-600" />
+            <CalendarDays className="w-4 h-4 text-brand-600" />
             <h2 className="text-base font-bold text-neutral-900 dark:text-neutral-100">Bulan Kerja</h2>
           </div>
-          <p className="text-xs text-neutral-500">
-            Bulan yang sedang dipakai semua menu: <span className="font-bold text-neutral-800 dark:text-neutral-200">{periodLabelOf(activePeriodKey)}</span>.
-            Saat pindah bulan, data bulan lama disimpan utuh dan bulan baru dimulai kosong. Bulan tidak berganti sendiri mengikuti kalender.
-          </p>
 
           <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
             <select
@@ -278,7 +284,7 @@ export const PengaturanView: React.FC<PengaturanViewProps> = ({
               <button
                 onClick={handleBackupAndInspect}
                 disabled={isBackingUp || isSyncing}
-                className="px-4 py-2.5 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white transition-colors"
+                className="px-4 py-2.5 rounded-xl text-xs font-bold bg-brand-600 hover:bg-brand-700 text-white transition-colors"
               >
                 {isBackingUp ? 'Membackup...' : `Cadangkan Data ${periodLabelOf(pickedPeriod)}`}
               </button>
@@ -286,20 +292,20 @@ export const PengaturanView: React.FC<PengaturanViewProps> = ({
               <button
                 onClick={handleConfirmSwitch}
                 disabled={isSyncing}
-                className="px-4 py-2.5 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white transition-colors"
+                className="px-4 py-2.5 rounded-xl text-xs font-bold bg-brand-600 hover:bg-brand-700 text-white transition-colors"
               >
                 Pindah ke {periodLabelOf(pickedPeriod)}
               </button>
             )}
           </div>
           {switchConfirmMsg && pickedPeriod !== activePeriodKey && (
-            <div className="p-4 rounded-2xl border border-rose-200 dark:border-rose-900/50 bg-rose-50 dark:bg-rose-950/20 space-y-3">
+            <div className="p-4 rounded-2xl border border-brand-200 dark:border-brand-900/50 bg-brand-50 dark:bg-brand-950/20 space-y-3">
               <p className="text-xs font-semibold text-neutral-800 dark:text-neutral-200 leading-relaxed">{switchConfirmMsg}</p>
               <div className="flex gap-2">
                 <button
                   onClick={handleRunSwitch}
                   disabled={isSyncing}
-                  className="flex-1 px-4 py-2.5 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white transition-colors"
+                  className="flex-1 px-4 py-2.5 rounded-xl text-xs font-bold bg-brand-600 hover:bg-brand-700 text-white transition-colors"
                 >
                   Ya, pindah ke {periodLabelOf(pickedPeriod)}
                 </button>
@@ -377,7 +383,7 @@ export const PengaturanView: React.FC<PengaturanViewProps> = ({
                   )}
                 </div>
               ) : (
-                <p className="text-xs text-rose-600 dark:text-rose-400">{cloudResult.message}</p>
+                <p className="text-xs text-red-600 dark:text-red-400">{cloudResult.message}</p>
               )
             )}
           </div>
@@ -398,14 +404,11 @@ export const PengaturanView: React.FC<PengaturanViewProps> = ({
       {/* 2. Security PIN Settings */}
       <div className="p-5 bg-white dark:bg-neutral-900 rounded-2xl border border-neutral-200 dark:border-neutral-800 shadow-sm space-y-4">
         <div className="flex items-center gap-2">
-          <KeyRound className="w-4 h-4 text-rose-600" />
+          <KeyRound className="w-4 h-4 text-brand-600" />
           <h2 className="text-base font-bold text-neutral-900 dark:text-neutral-100">
-            PIN Keamanan Akses
+            PIN Akses
           </h2>
         </div>
-        <p className="text-xs text-neutral-500">
-          Ubah kode PIN numerik untuk masuk akun Admin Cabang dan Akun TKU
-        </p>
 
         <form onSubmit={handleSavePins} className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-xl">
           <div>
@@ -451,9 +454,9 @@ export const PengaturanView: React.FC<PengaturanViewProps> = ({
       <div className="p-5 bg-white dark:bg-neutral-900 rounded-2xl border border-neutral-200 dark:border-neutral-800 shadow-sm space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
-            <Database className="w-4 h-4 text-rose-600" />
+            <Database className="w-4 h-4 text-brand-600" />
             <h2 className="text-base font-bold text-neutral-900 dark:text-neutral-100">
-              Sinkronisasi Cloud Supabase (Multi-Perangkat)
+              Database Cloud
             </h2>
           </div>
           <div className="flex items-center gap-2">
@@ -558,12 +561,12 @@ export const PengaturanView: React.FC<PengaturanViewProps> = ({
             <div className={`p-3 rounded-xl text-xs flex items-start gap-2 ${
               sbTestResult.success 
                 ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800' 
-                : 'bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200 border border-rose-200 dark:border-rose-800'
+                : 'bg-red-50 dark:bg-red-950/40 text-red-800 dark:text-red-200 border border-red-200 dark:border-red-800'
             }`}>
               {sbTestResult.success ? (
                 <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
               ) : (
-                <ShieldAlert className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                <ShieldAlert className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
               )}
               <span>{sbTestResult.message}</span>
             </div>
@@ -574,7 +577,7 @@ export const PengaturanView: React.FC<PengaturanViewProps> = ({
               <>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold transition-colors shadow-xs flex items-center gap-1.5 cursor-pointer"
+                  className="px-4 py-2 rounded-xl bg-brand-600 hover:bg-brand-700 text-white font-bold transition-colors shadow-xs flex items-center gap-1.5 cursor-pointer"
                 >
                   <Lock className="w-3.5 h-3.5" />
                   <span>Simpan & Kunci</span>
@@ -605,21 +608,57 @@ export const PengaturanView: React.FC<PengaturanViewProps> = ({
               disabled={isTestingSb || (!state.supabaseConfig.u && !sbUrl) || (!state.supabaseConfig.k && !sbKey)}
               className="px-4 py-2 rounded-xl border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-800 dark:text-neutral-200 font-semibold hover:bg-neutral-100 dark:hover:bg-neutral-700 disabled:opacity-50 transition-colors flex items-center gap-1.5 cursor-pointer"
             >
-              <Radio className={`w-3.5 h-3.5 ${isTestingSb ? 'animate-spin text-rose-600' : ''}`} />
+              <Radio className={`w-3.5 h-3.5 ${isTestingSb ? 'animate-spin text-brand-600' : ''}`} />
               <span>{isTestingSb ? 'Menguji...' : 'Tes Koneksi'}</span>
             </button>
 
-            {(state.supabaseConfig.u || state.supabaseConfig.k) && (
+            {state.supabaseConfig.u && state.supabaseConfig.k && (
+              <button
+                type="button"
+                onClick={async () => {
+                  const link = buildInviteLink(state.supabaseConfig);
+                  try {
+                    await navigator.clipboard.writeText(link);
+                    showToast('Link undangan disalin! Kirim ke tim — saat dibuka di HP mana pun, aplikasinya OTOMATIS langsung terhubung ke Supabase.', 'success');
+                  } catch {
+                    window.prompt('Salin link undangan ini:', link);
+                  }
+                }}
+                className="px-4 py-2 rounded-xl border border-brand-400 dark:border-brand-700 bg-brand-600 text-white font-semibold hover:bg-brand-700 shadow-sm transition-colors flex items-center gap-1.5 cursor-pointer"
+                title="Salin link yang otomatis menghubungkan perangkat penerima ke database Supabase"
+              >
+                <Link2 className="w-4 h-4" />
+                <span>Salin Link Undangan (Auto-Connect)</span>
+              </button>
+            )}
+
+            {(state.supabaseConfig.u || state.supabaseConfig.k) ? (
               <button
                 type="button"
                 onClick={handleClearSb}
                 disabled={isLocked}
-                className="px-3.5 py-2 rounded-xl text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 font-semibold transition-colors flex items-center gap-1.5 ml-auto disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-                title={isLocked ? "Buka kunci terlebih dahulu" : "Hapus Kredensial Supabase"}
+                className="px-3.5 py-2 rounded-xl text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 font-semibold transition-colors flex items-center gap-1.5 ml-auto disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                title={isLocked ? "Buka kunci terlebih dahulu" : "Putuskan Koneksi Supabase"}
               >
                 <Unlink className="w-3.5 h-3.5" />
                 <span>Putuskan Cloud</span>
               </button>
+            ) : (
+              DEFAULT_SUPABASE_CONFIG.u && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSbUrl(DEFAULT_SUPABASE_CONFIG.u);
+                    setSbKey(DEFAULT_SUPABASE_CONFIG.k);
+                    onUpdateSupabase(DEFAULT_SUPABASE_CONFIG.u, DEFAULT_SUPABASE_CONFIG.k, true);
+                    showToast('Berhasil terhubung kembali ke database Supabase!', 'success');
+                  }}
+                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold shadow-sm transition-colors flex items-center gap-1.5 ml-auto cursor-pointer"
+                >
+                  <Database className="w-3.5 h-3.5" />
+                  <span>Hubungkan ke Supabase Utama</span>
+                </button>
+              )
             )}
           </div>
         </form>
@@ -663,11 +702,11 @@ export const PengaturanView: React.FC<PengaturanViewProps> = ({
                   }}
                   autoFocus
                   className={`w-full px-4 py-2.5 rounded-xl border text-center font-mono font-bold text-lg tracking-widest bg-neutral-50 dark:bg-neutral-800 ${
-                    unlockError ? 'border-rose-500 text-rose-600' : 'border-neutral-300 dark:border-neutral-700 text-neutral-900 dark:text-white'
+                    unlockError ? 'border-red-500 text-red-600' : 'border-neutral-300 dark:border-neutral-700 text-neutral-900 dark:text-white'
                   }`}
                 />
                 {unlockError && (
-                  <p className="text-xs text-rose-500 font-semibold text-center">PIN Admin tidak sesuai</p>
+                  <p className="text-xs text-red-500 font-semibold text-center">PIN Admin tidak sesuai</p>
                 )}
 
                 <div className="flex items-center gap-2 pt-1">
@@ -721,12 +760,9 @@ create policy "Allow anon read write" on app_store for all using (true) with che
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <h2 className="text-base font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
-              <RefreshCw className={`w-4 h-4 text-rose-600 ${isSyncing ? 'animate-spin' : ''}`} />
-              <span>Sinkronisasi &amp; Rekonsiliasi Data</span>
+              <RefreshCw className={`w-4 h-4 text-brand-600 ${isSyncing ? 'animate-spin' : ''}`} />
+              <span>Sinkronisasi Data</span>
             </h2>
-            <p className="text-xs text-neutral-500 mt-0.5">
-              Menghitung ulang dan menyelaraskan seluruh akumulasi penjualan 4 varian, BB, presensi YL, JWP, s/YL, dan metrik mingguan/bulanan di semua menu.
-            </p>
           </div>
 
           {onManualSync && (
@@ -736,7 +772,7 @@ create policy "Allow anon read write" on app_store for all using (true) with che
               className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shadow-xs shrink-0 ${
                 isSyncing
                   ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
-                  : 'bg-rose-600 hover:bg-rose-700 text-white'
+                  : 'bg-brand-600 hover:bg-brand-700 text-white'
               }`}
             >
               <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
@@ -749,11 +785,8 @@ create policy "Allow anon read write" on app_store for all using (true) with che
       {/* 6. Backup & Restore Data */}
       <div className="p-5 bg-white dark:bg-neutral-900 rounded-2xl border border-neutral-200 dark:border-neutral-800 shadow-sm space-y-4">
         <h2 className="text-base font-bold text-neutral-900 dark:text-neutral-100">
-          Cadangan & Pemulihan Sistem (JSON)
+          Cadangan Data
         </h2>
-        <p className="text-xs text-neutral-500">
-          Unduh seluruh data penjualan, target, breakdown, dan arsip untuk disimpan aman atau dipindahkan ke komputer lain.
-        </p>
 
         <div className="flex flex-wrap items-center gap-3">
           <button
@@ -765,7 +798,7 @@ create policy "Allow anon read write" on app_store for all using (true) with che
           </button>
 
           <label className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-800 dark:text-neutral-200 text-xs font-semibold hover:bg-neutral-100 dark:hover:bg-neutral-700 cursor-pointer transition-colors">
-            <Upload className="w-4 h-4 text-rose-600" />
+            <Upload className="w-4 h-4 text-brand-600" />
             <span>Pulihkan dari File JSON</span>
             <input
               type="file"
@@ -778,9 +811,15 @@ create policy "Allow anon read write" on app_store for all using (true) with che
           {onClearPjdHjd && (
             <button
               onClick={() => {
-                if (confirm(`Konfirmasi: Hapus data input harian (PJD & HJD) bulan ${periodLabelOf(activePeriodKey)} saja? Bulan lain, master profil TKU, target, dan arsip bulanan tetap aman.`)) {
-                  onClearPjdHjd();
-                }
+                ask({
+                  title: 'Hapus Input Harian Bulan Ini?',
+                  message: `Konfirmasi: Hapus data input harian (PJD & HJD) bulan ${periodLabelOf(activePeriodKey)} saja?\nBulan lain, master profil TKU, target, dan arsip bulanan tetap aman.`,
+                  confirmLabel: 'Ya, Hapus Input Harian',
+                  tone: 'warning',
+                  onConfirm: () => {
+                    onClearPjdHjd();
+                  }
+                });
               }}
               className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl border border-amber-300 dark:border-amber-800/60 bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300 text-xs font-semibold hover:bg-amber-100 dark:hover:bg-amber-900/40 transition-colors"
             >
@@ -791,18 +830,25 @@ create policy "Allow anon read write" on app_store for all using (true) with che
 
           <button
             onClick={() => {
-              if (confirm('PERINGATAN: SEMUA bulan (termasuk bulan yang sudah disimpan) akan dikembalikan ke data awal, dan perubahan ini bisa ikut terkirim ke Supabase. Unduh cadangan JSON dulu. Lanjutkan?')) {
-                onResetDefault();
-                showToast('Aplikasi direset ke data awal', 'info');
-              }
+              ask({
+                title: 'PERINGATAN: Reset Pabrik',
+                message: 'SEMUA bulan (termasuk bulan yang sudah disimpan) akan dikembalikan ke data awal, dan perubahan ini bisa ikut terkirim ke Supabase.\n\nDisarankan mengunduh cadangan JSON terlebih dahulu. Lanjutkan reset?',
+                confirmLabel: 'Ya, Reset Pabrik',
+                tone: 'danger',
+                onConfirm: () => {
+                  onResetDefault();
+                  showToast('Aplikasi direset ke data awal', 'info');
+                }
+              });
             }}
-            className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-semibold text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors ml-auto"
+            className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-semibold text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors ml-auto"
           >
             <RotateCcw className="w-3.5 h-3.5" />
             <span>Reset ke Pengaturan Pabrik</span>
           </button>
         </div>
       </div>
+    {dialog}
     </div>
   );
 };

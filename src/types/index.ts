@@ -9,7 +9,7 @@ export interface VariantInfo {
 }
 
 export const VARIANTS: VariantInfo[] = [
-  { code: 'YO', name: 'Yakult Original', color: '#c8102e', badgeBg: 'bg-rose-50 dark:bg-rose-950/40', badgeText: 'text-rose-700 dark:text-rose-400' },
+  { code: 'YO', name: 'Yakult Original', color: '#c8102e', badgeBg: 'bg-red-50 dark:bg-red-950/40', badgeText: 'text-red-700 dark:text-red-400' },
   { code: 'OM', name: 'Original Mangga', color: '#f59e0b', badgeBg: 'bg-amber-50 dark:bg-amber-950/40', badgeText: 'text-amber-700 dark:text-amber-400' },
   { code: 'OS', name: 'Original Stroberi', color: '#ec4899', badgeBg: 'bg-pink-50 dark:bg-pink-950/40', badgeText: 'text-pink-700 dark:text-pink-400' },
   { code: 'YT', name: 'Yakult Light', color: '#0ea5e9', badgeBg: 'bg-sky-50 dark:bg-sky-950/40', badgeText: 'text-sky-700 dark:text-sky-400' },

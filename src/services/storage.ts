@@ -9,6 +9,7 @@ import {
   INITIAL_PJD,
   INITIAL_DAILY_HISTORY
 } from '../data/initialData';
+import { DEFAULT_SUPABASE_CONFIG } from '../config/defaultSupabase';
 
 const STORAGE_KEY = 'yakult_sales_system_v11';
 const SESSION_KEY = 'yk_sesi_v11';
@@ -32,6 +33,10 @@ export function loadSupabaseConfigFromVault(): SupabaseConfig {
     const vaultRaw = localStorage.getItem(SUPABASE_VAULT_KEY);
     if (vaultRaw) {
       const parsed = JSON.parse(vaultRaw);
+      // Jika pengguna sengaja memutuskan koneksi di menu setting pada perangkat ini
+      if (parsed && parsed.disconnected === true) {
+        return { u: '', k: '', locked: false };
+      }
       if (parsed && typeof parsed.u === 'string' && typeof parsed.k === 'string' && (parsed.u.trim() || parsed.k.trim())) {
         return {
           u: parsed.u.trim(),
@@ -79,16 +84,35 @@ export function loadSupabaseConfigFromVault(): SupabaseConfig {
     console.warn('Gagal membaca vault Supabase:', err);
   }
 
+  // 3. Kredensial bawaan permanen dari DEFAULT_SUPABASE_CONFIG (aktif otomatis di semua perangkat)
+  if (DEFAULT_SUPABASE_CONFIG.u && DEFAULT_SUPABASE_CONFIG.k) {
+    return {
+      u: DEFAULT_SUPABASE_CONFIG.u.trim(),
+      k: DEFAULT_SUPABASE_CONFIG.k.trim(),
+      locked: Boolean(DEFAULT_SUPABASE_CONFIG.locked)
+    };
+  }
+
+  // 4. Opsional: kredensial bawaan dari environment build (VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY)
+  try {
+    const env = (import.meta as any).env || {};
+    const du = String(env.VITE_SUPABASE_URL || '').trim();
+    const dk = String(env.VITE_SUPABASE_ANON_KEY || '').trim();
+    if (du && dk) return { u: du, k: dk, locked: true };
+  } catch (_) {}
+
   return { u: '', k: '', locked: false };
 }
 
 export function saveSupabaseConfigToVault(config: SupabaseConfig) {
   try {
     if (!config) return;
-    const clean: SupabaseConfig = {
+    const isDisconnected = !(config.u || '').trim() && !(config.k || '').trim();
+    const clean = {
       u: (config.u || '').trim(),
       k: (config.k || '').trim(),
-      locked: Boolean(config.locked)
+      locked: Boolean(config.locked),
+      disconnected: isDisconnected
     };
     localStorage.setItem(SUPABASE_VAULT_KEY, JSON.stringify(clean));
   } catch (err) {
@@ -245,6 +269,28 @@ export async function loadStateFromSupabase(config: SupabaseConfig | undefined |
     merged.activeDate = remoteAct.date;
     merged.currentDayNum = remoteAct.day;
     merged.pembagiHari = remoteAct.day;
+
+    const remotePjd = merged.pjd?.[remoteAct.date] || {};
+    const syncedRemoteInputs: Record<number, DailySalesRecord> = {};
+    merged.tkus.forEach((_, idx) => {
+      if (remotePjd[idx]) {
+        syncedRemoteInputs[idx] = { ...remotePjd[idx] };
+      } else {
+        syncedRemoteInputs[idx] = {
+          v: [0, 0, 0, 0],
+          b: [0, 0, 0, 0],
+          sold: 0,
+          bb: 0,
+          pdmV: [0, 0, 0, 0],
+          pdm: 0,
+          yl: merged.tkus[idx]?.jumlahYl || 10,
+          ar: merged.tkus[idx]?.jumlahArea || 10,
+          jwp: (merged.tkus[idx]?.jumlahYl || 10) * remoteAct.day,
+        };
+      }
+    });
+    merged.todayInputs = syncedRemoteInputs;
+
     const remoteTs = Date.parse((data.updated_at as string) || '');
     writeSyncMeta(config, isNaN(remoteTs) ? 0 : remoteTs, computeSyncHash(merged));
     return { state: merged };
@@ -308,10 +354,25 @@ export async function testSupabaseConnection(u: string, k: string): Promise<{ su
   }
 }
 
+export const floorInt = (n: number | null | undefined): number => {
+  if (n === null || n === undefined || isNaN(n)) return 0;
+  return Math.floor(n);
+};
+
 export const formatNumber = (n: number | null | undefined): string => {
   if (n === null || n === undefined || isNaN(n)) return '—';
-  return Math.round(n).toLocaleString('id-ID');
+  return Math.floor(n).toLocaleString('id-ID');
 };
+
+// Poin 5: Semua angka desimal (di belakang koma) dihapus, DIBULATKAN KE BAWAH (300,89 jadi 300)
+// formatDecimal disamakan dengan formatNumber bulat ke bawah tanpa desimal
+export const formatDecimal = (n: number | null | undefined, _digits = 0): string => {
+  if (n === null || n === undefined || isNaN(n)) return '—';
+  return Math.floor(n).toLocaleString('id-ID');
+};
+
+// Bulatkan ke bawah tanpa desimal (300,89 jadi 300)
+export const round2 = (n: number): number => Math.floor(Number(n) || 0);
 
 export const formatPercent = (x: number | null | undefined): string => {
   if (x === null || x === undefined || !isFinite(x) || isNaN(x)) return '—';
@@ -326,14 +387,14 @@ export const formatDiff = (n: number | null | undefined): string => {
 
 export const getStatusClass = (n: number | null | undefined): string => {
   if (n === null || n === undefined || isNaN(n)) return 'text-neutral-500';
-  return n >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400';
+  return n >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400';
 };
 
 export const getStatusBg = (n: number | null | undefined): string => {
   if (n === null || n === undefined || isNaN(n)) return 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400';
   return n >= 0
     ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'
-    : 'bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300';
+    : 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300';
 };
 
 export const formatDateIndo = (dateStr: string): string => {
@@ -460,20 +521,55 @@ export const getWeeksOfMonth = (state: AppState): { start: number; end: number }
   return list;
 };
 
-export const getTanggalUpdate = (state: AppState): number => {
-  const maxDays = getDaysInActiveMonth(state);
-  const raw = state.currentDayNum || getTodayDayNum();
-  return Math.max(1, Math.min(raw, maxDays));
-};
-
+// Pembagi realisasi (Dashboard, Evaluasi, Akun TKU, Breakdown):
+// Dihitung otomatis berdasarkan TANGGAL TERAKHIR YANG MEMILIKI TRANSAKSI PENJUALAN (PJD).
+// Contoh: Hari ini tanggal 5 Oktober, tetapi transaksi terakhir yang tersimpan adalah tanggal 3 Oktober,
+// maka pembagi otomatis = 3 hari (bukan 5), sehingga rata-rata harian tetap akurat.
+// Ketika tanggal 5 sudah diinput dan disimpan, pembagi otomatis bertambah menjadi 5.
 export const getLatestSalesDay = (state: AppState): number => {
-  return getTanggalUpdate(state);
+  const period = getPeriodInfo(state);
+  const pjd = state.pjd || {};
+  let latestDay = 0;
+
+  // Scan seluruh tanggal di bulan aktif untuk mencari tanggal terbesar yang ada transaksi
+  for (let d = 1; d <= period.daysInMonth; d++) {
+    const dStr = `${period.key}-${String(d).padStart(2, '0')}`;
+    const dayRecords = pjd[dStr];
+    if (dayRecords) {
+      const hasSales = Object.values(dayRecords).some(
+        r => r && (Number(r.sold) > 0 || (Array.isArray(r.v) && r.v.some(v => Number(v) > 0)))
+      );
+      if (hasSales) {
+        latestDay = d;
+      }
+    }
+  }
+
+  // Cek apakah ada data di todayInputs untuk hari ini
+  if (state.todayInputs) {
+    const hasTodaySales = Object.values(state.todayInputs).some(
+      r => r && (Number(r.sold) > 0 || (Array.isArray(r.v) && r.v.some(v => Number(v) > 0)))
+    );
+    if (hasTodaySales && state.currentDayNum > latestDay) {
+      latestDay = state.currentDayNum;
+    }
+  }
+
+  // Khusus bulan data resmi bawaan (September 2026), jika belum ada PJD dinamis, fallback ke tanggal berjalan
+  if (latestDay === 0 && period.key === SEED_PERIOD) {
+    return Math.max(1, Math.min(state.currentDayNum || 1, period.daysInMonth));
+  }
+
+  // Jika belum ada transaksi sama sekali di bulan baru, default ke 1
+  return latestDay > 0 ? latestDay : 1;
 };
 
-// Pembagi realisasi (Dashboard, Akun TKU, Breakdown): tanpa cut-off.
-// = jumlah hari berjalan sampai tanggal update, maksimal tanggal terakhir bulan kerja.
 export const getPembagiHari = (state: AppState): number => {
-  return getTanggalUpdate(state);
+  return getLatestSalesDay(state);
+};
+
+export const getTanggalUpdate = (state: AppState): number => {
+  return getPembagiHari(state);
 };
 
 export const getPembagiRealisasi = (state: AppState): number => {
@@ -564,7 +660,7 @@ export function buildDefaultBreakdown(
       total.push(plan);
       codes.forEach(c => {
         const tg = perVariantTarget?.[c]?.[idx]?.tg;
-        const base = tg !== undefined && tg > 0 ? tg : Math.round((tku.targetHarian || 0) * VARIANT_SHARE[c]);
+        const base = tg !== undefined && tg > 0 ? tg : Math.floor((tku.targetHarian || 0) * VARIANT_SHARE[c]);
         per[c].push(isSunday ? 0 : base);
       });
     }
@@ -623,15 +719,15 @@ export function buildBlankSnapshot(state: AppState, key: string): MonthSnapshot 
     if (!arc) return 0;
     const row = arc.rows.find(r => r.nama.toLowerCase() === nama.toLowerCase());
     if (!row) return 0;
-    if (row.rataHarian && row.rataHarian > 0) return Math.round(row.rataHarian);
-    return arc.d > 0 ? Math.round(row.total / arc.d) : 0;
+    if (row.rataHarian && row.rataHarian > 0) return round2(row.rataHarian);
+    return arc.d > 0 ? round2(row.total / arc.d) : 0;
   };
   const avgVarFrom = (arc: ArchiveRecord | undefined, nama: string, vi: number): number => {
     if (!arc) return 0;
     const row = arc.rows.find(r => r.nama.toLowerCase() === nama.toLowerCase());
     if (!row) return 0;
-    if (row.rataVarian && row.rataVarian[vi] !== undefined) return Math.round(row.rataVarian[vi]);
-    return arc.d > 0 ? Math.round((row.varian?.[vi] || 0) / arc.d) : 0;
+    if (row.rataVarian && row.rataVarian[vi] !== undefined) return round2(row.rataVarian[vi]);
+    return arc.d > 0 ? round2((row.varian?.[vi] || 0) / arc.d) : 0;
   };
 
   const codes: Array<'YO' | 'OM' | 'OS' | 'YT'> = ['YO', 'OM', 'OS', 'YT'];
@@ -662,7 +758,7 @@ export function buildBlankSnapshot(state: AppState, key: string): MonthSnapshot 
     targetTahunLalu[i] = avgFrom(lyArc, t.nama);
     codes.forEach((c, vi) => {
       targetPerVariant[c][i] = {
-        tg: state.targetPerVariant?.[c]?.[i]?.tg ?? Math.round((t.targetHarian || 0) * VARIANT_SHARE[c]),
+        tg: state.targetPerVariant?.[c]?.[i]?.tg ?? Math.floor((t.targetHarian || 0) * VARIANT_SHARE[c]),
         bl: avgVarFrom(prevArc, t.nama, vi),
         ty: avgVarFrom(lyArc, t.nama, vi)
       };
@@ -677,8 +773,6 @@ export function buildBlankSnapshot(state: AppState, key: string): MonthSnapshot 
       yl,
       ar,
       jwp: yl * act.day,
-      absen: 0,
-      frek: 0
     };
   });
 
@@ -922,8 +1016,6 @@ export function getDefaultState(): AppState {
       yl: ylCounts[idx] || 10,
       ar: areaCounts[idx] || 10,
       jwp: (ylCounts[idx] || 10) * dayNum,
-      absen: 0,
-      frek: 0
     };
   });
 
@@ -1069,7 +1161,6 @@ export function loadAppState(): AppState {
         Object.keys(parsed.targetPerVariant?.YO || {}).length < 10;
 
       if (needsFreshMaster) {
-        console.log('Migrating to fresh clean state (PJD & HJD cleared)...');
         const vaultCfg = loadSupabaseConfigFromVault();
         const finalCfg = (parsed.supabaseConfig && parsed.supabaseConfig.u) ? parsed.supabaseConfig : vaultCfg;
         if (finalCfg.u || finalCfg.k) {
@@ -1112,6 +1203,37 @@ export function loadAppState(): AppState {
       const act = computeActiveDate(merged.activePeriod);
       merged.activeDate = act.date;
       merged.currentDayNum = act.day;
+
+      if (Array.isArray(merged.tkus)) {
+        merged.tkus.forEach(t => {
+          if (t && t.nama === 'JEMBER') t.nama = 'JEMBER 1';
+        });
+      }
+
+      // Sinkronisasi todayInputs murni terhadap tanggal aktif (act.date).
+      // Jika pada tanggal aktif sudah ada data tersimpan di pjd, pakai data tersebut.
+      // Jika belum ada data di pjd untuk tanggal aktif, setel seluruh kolom ke 0 (bukan membawa data hari kemarin/lalu).
+      const activePjd = merged.pjd?.[act.date] || {};
+      const syncedTodayInputs: Record<number, DailySalesRecord> = {};
+      merged.tkus.forEach((_, idx) => {
+        if (activePjd[idx]) {
+          syncedTodayInputs[idx] = { ...activePjd[idx] };
+        } else {
+          syncedTodayInputs[idx] = {
+            v: [0, 0, 0, 0],
+            b: [0, 0, 0, 0],
+            sold: 0,
+            bb: 0,
+            pdmV: [0, 0, 0, 0],
+            pdm: 0,
+            yl: merged.tkus[idx]?.jumlahYl || 10,
+            ar: merged.tkus[idx]?.jumlahArea || 10,
+            jwp: (merged.tkus[idx]?.jumlahYl || 10) * act.day,
+          };
+        }
+      });
+      merged.todayInputs = syncedTodayInputs;
+
       // Cut-off sudah dihapus: buang sisa pengaturan lama dari data tersimpan
       delete (merged as unknown as Record<string, unknown>).cutoffHari;
       merged.pembagiHariMode = 'tanggal';
@@ -1186,26 +1308,59 @@ export function loadAppState(): AppState {
  * Sinkronisasi total data, rekonsiliasi angka penjualan akumulasi TKU,
  * botol balik, absensi, JWP, s/YL, dan indikator operasional agar serasi 100% di semua tampilan.
  */
+// Unit TKU "Jember" (nama lama) disamakan menjadi "Jember 1" di data aktif maupun arsip.
+// Ini hanya untuk nama TKU, bukan nama cabang ("Cabang Jember").
+const isNamaJemberLama = (n: unknown): boolean =>
+  typeof n === 'string' && n.trim().toLowerCase() === 'jember';
+
+function normalizeNamaJember1(state: AppState): AppState {
+  let changed = false;
+  const tkus = (state.tkus || []).map(t => {
+    if (t && isNamaJemberLama(t.nama)) { changed = true; return { ...t, nama: 'JEMBER 1' }; }
+    return t;
+  });
+  let archives = state.archives;
+  if (archives) {
+    const next: Record<string, ArchiveRecord> = {};
+    Object.keys(archives).forEach(k => {
+      const arc = archives[k];
+      if (arc?.rows?.some(r => isNamaJemberLama(r.nama))) {
+        changed = true;
+        next[k] = { ...arc, rows: arc.rows.map(r => isNamaJemberLama(r.nama) ? { ...r, nama: 'Jember 1' } : r) };
+      } else {
+        next[k] = arc;
+      }
+    });
+    archives = next;
+  }
+  return changed ? { ...state, tkus, archives } : state;
+}
+
 export function synchronizeAppState(state: AppState): AppState {
+  state = normalizeNamaJember1(state);
   const period = getPeriodInfo(state);
   const isSeed = period.key === SEED_PERIOD; // hanya bulan data resmi yang boleh memakai angka dasar spreadsheet
-  const divider = state.pembagiHari || state.currentDayNum || 1;
+  const divider = getPembagiHari(state);
   const pjd = { ...(state.pjd || {}) };
 
   const nextTkus = state.tkus.map((t, idx) => {
     let sumV: [number, number, number, number] = [0, 0, 0, 0];
     let hasPjdData = false;
     let akmBb = 0;
-    let akmAbsen = 0;
-    let akmFrek = 0;
+    // Nilai Master dari Profil TKU (Source of Truth untuk Jumlah YL & Area)
+    const masterYl = t.jumlahYl || 10;
+    const masterArea = t.jumlahArea || 10;
+
+    let latestAbsen = isSeed ? (t.absenYl ?? 0) : 0;
+    let latestFrek = isSeed ? (t.frekuensiAbsen ?? 0) : 0;
     const sumB: [number, number, number, number] = [0, 0, 0, 0];
     let latestJwp = 0;
-    let latestYl = t.jumlahYl || 10;
-    let latestArea = t.jumlahArea || 10;
+    let latestYl = masterYl;
+    let latestArea = masterArea;
     let latestL250 = t.l250 ?? 0;
     let latestL300 = t.l300 ?? 0;
 
-    // Scan seluruh tanggal dalam bulan aktif
+    // Scan seluruh tanggal dalam bulan aktif di pjd
     for (let d = 1; d <= 31; d++) {
       const dStr = `${period.key}-${String(d).padStart(2, '0')}`;
       const rec = pjd[dStr]?.[idx];
@@ -1222,38 +1377,25 @@ export function synchronizeAppState(state: AppState): AppState {
         }
         if (rec.jwp !== undefined && rec.jwp > 0) latestJwp = rec.jwp;
         akmBb += Number(rec.bb) || 0;
-        akmAbsen += Number(rec.absen) || 0;
-        akmFrek += Number(rec.frek) || 0;
+        if (rec.absen !== undefined) latestAbsen = Number(rec.absen) || 0;
+        if (rec.frek !== undefined) latestFrek = Number(rec.frek) || 0;
         if (rec.yl !== undefined && rec.yl > 0) latestYl = rec.yl;
         if (rec.ar !== undefined && rec.ar > 0) latestArea = rec.ar;
-        if (rec.l250 !== undefined) latestL250 = rec.l250;
-        if (rec.l300 !== undefined) latestL300 = rec.l300;
+        if (rec.l250 !== undefined) latestL250 = Number(rec.l250) || 0;
+        if (rec.l300 !== undefined) latestL300 = Number(rec.l300) || 0;
       }
     }
 
-    // Periksa apakah ada input aktif hari ini di todayInputs yang belum masuk pjd
-    if (state.todayInputs && state.todayInputs[idx]) {
-      const todayRec = state.todayInputs[idx];
-      const todayDate = state.activeDate;
-      if (!pjd[todayDate]?.[idx]) {
-        if (todayRec.v && Array.isArray(todayRec.v)) {
-          sumV[0] += Number(todayRec.v[0]) || 0;
-          sumV[1] += Number(todayRec.v[1]) || 0;
-          sumV[2] += Number(todayRec.v[2]) || 0;
-          sumV[3] += Number(todayRec.v[3]) || 0;
-        }
-        if (todayRec.b && Array.isArray(todayRec.b)) {
-          for (let k = 0; k < 4; k++) sumB[k] += Number(todayRec.b[k]) || 0;
-        }
-        if (todayRec.jwp !== undefined && todayRec.jwp > 0) latestJwp = todayRec.jwp;
-        akmBb += Number(todayRec.bb) || 0;
-        akmAbsen += Number(todayRec.absen) || 0;
-        akmFrek += Number(todayRec.frek) || 0;
-        if (todayRec.yl !== undefined && todayRec.yl > 0) latestYl = todayRec.yl;
-        if (todayRec.ar !== undefined && todayRec.ar > 0) latestArea = todayRec.ar;
-        if (todayRec.l250 !== undefined) latestL250 = todayRec.l250;
-        if (todayRec.l300 !== undefined) latestL300 = todayRec.l300;
-      }
+    // Periksa juga todayInputs (input aktif hari ini yang baru diketik/diisi chip)
+    const todayRec = state.todayInputs?.[idx];
+    if (todayRec) {
+      if (todayRec.absen !== undefined) latestAbsen = Number(todayRec.absen) || 0;
+      if (todayRec.frek !== undefined) latestFrek = Number(todayRec.frek) || 0;
+      if (todayRec.l250 !== undefined) latestL250 = Number(todayRec.l250) || 0;
+      if (todayRec.l300 !== undefined) latestL300 = Number(todayRec.l300) || 0;
+      if (todayRec.yl !== undefined && todayRec.yl > 0) latestYl = todayRec.yl;
+      if (todayRec.ar !== undefined && todayRec.ar > 0) latestArea = todayRec.ar;
+      if (todayRec.jwp !== undefined && todayRec.jwp > 0) latestJwp = todayRec.jwp;
     }
 
     const totalV = sumV[0] + sumV[1] + sumV[2] + sumV[3];
@@ -1262,20 +1404,19 @@ export function synchronizeAppState(state: AppState): AppState {
       : sumV; // bulan selain data resmi: murni dari input harian (kosong kalau belum ada input)
 
     const totalSold = finalV[0] + finalV[1] + finalV[2] + finalV[3];
-    // Bulan data resmi: pakai angka spreadsheet. Bulan lain: hitung ulang dari data harian setiap kali
-    // (JWP terakhir yang diinput, atau jumlah YL x tanggal), supaya tidak macet di angka hari pertama.
     const finalAkmJwp = isSeed
       ? (t.akmJwp || (latestYl * divider))
       : (latestJwp > 0 ? latestJwp : latestYl * divider);
-    const calculatedSYl = finalAkmJwp > 0 ? Math.round(totalSold / finalAkmJwp) : 0;
+    const calculatedSYl = finalAkmJwp > 0 ? Math.floor(totalSold / finalAkmJwp) : 0;
     const finalSYl = isSeed ? (t.sYl || calculatedSYl) : calculatedSYl;
-    const finalCover = latestArea > 0 ? latestYl / latestArea : 1.0;
 
-    // Preservasi data presensi dan BB dari spreadsheet jika akm harian lebih kecil
-    const baseAbsen = isSeed ? (INITIAL_TKUS[idx]?.absenYl ?? t.absenYl ?? 0) : 0;
-    const baseFrek = isSeed ? (INITIAL_TKUS[idx]?.frekuensiAbsen ?? t.frekuensiAbsen ?? 0) : 0;
-    const finalAbsen = akmAbsen > baseAbsen ? akmAbsen : baseAbsen;
-    const finalFrek = akmFrek > baseFrek ? akmFrek : baseFrek;
+    // Nilai dari Profil TKU selalu menjadi rujukan utama untuk Jumlah YL & Area
+    const finalYl = masterYl;
+    const finalArea = masterArea;
+    const finalCover = finalArea > 0 ? finalYl / finalArea : 1.0;
+
+    const finalAbsen = latestAbsen;
+    const finalFrek = latestFrek;
 
     const baseBb: [number, number, number, number] = isSeed
       ? ((t.bbAkm && (t.bbAkm[0] > 0 || t.bbAkm[1] > 0 || t.bbAkm[2] > 0 || t.bbAkm[3] > 0))
@@ -1286,8 +1427,8 @@ export function synchronizeAppState(state: AppState): AppState {
     return {
       ...t,
       penjualanAkm: finalV,
-      jumlahYl: latestYl,
-      jumlahArea: latestArea,
+      jumlahYl: finalYl,
+      jumlahArea: finalArea,
       coverageArea: finalCover,
       absenYl: finalAbsen,
       frekuensiAbsen: finalFrek,
@@ -1299,9 +1440,9 @@ export function synchronizeAppState(state: AppState): AppState {
     };
   });
 
-  // Sinkronisasi BB Harian Cabang
-  const nextBbHarian: Record<number, number> = { ...(state.bbHarian || {}) };
-  for (let d = 1; d <= 31; d++) {
+  // Sinkronisasi BB Harian Cabang untuk bulan aktif
+  const nextBbHarian: Record<number, number> = isSeed ? { ...(state.bbHarian || {}) } : {};
+  for (let d = 1; d <= period.daysInMonth; d++) {
     const dStr = `${period.key}-${String(d).padStart(2, '0')}`;
     const dayRecords = pjd[dStr];
     if (dayRecords) {
@@ -1312,6 +1453,7 @@ export function synchronizeAppState(state: AppState): AppState {
 
   return {
     ...state,
+    pembagiHari: divider,
     tkus: nextTkus,
     bbHarian: nextBbHarian,
   };

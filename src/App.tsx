@@ -16,7 +16,8 @@ import {
   synchronizeAppState,
   switchWorkingPeriod,
   saveMonthBackupToSupabase,
-  getDaysInMonthOfKey
+  getDaysInMonthOfKey,
+  round2
 } from './services/storage';
 import { Navbar } from './components/Navbar';
 import { Sidebar } from './components/Sidebar';
@@ -33,6 +34,7 @@ import { BreakdownRealisasiView } from './views/BreakdownRealisasiView';
 import { TargetView } from './views/TargetView';
 import { ProfilTkuView } from './views/ProfilTkuView';
 import { ArsipView } from './views/ArsipView';
+import { INITIAL_ARCHIVES } from './data/initialData';
 import { PengaturanView } from './views/PengaturanView';
 import { TkuInputView } from './views/TkuInputView';
 
@@ -49,7 +51,7 @@ function buildArchiveFromState(state: AppState): ArchiveRecord {
     const targetHarian = t.targetHarian || 0;
     const bulanLalu = state.targetBulanLalu[idx] || 0;
     const tahunLalu = state.targetTahunLalu[idx] || 0;
-    const rataHarian = divider > 0 ? Math.round(sold / divider) : 0;
+    const rataHarian = divider > 0 ? round2(sold / divider) : 0;
     const vsTargetPct = targetHarian > 0 ? rataHarian / targetHarian : 1;
     const vsLmPct = bulanLalu > 0 ? rataHarian / bulanLalu : 1;
     const vsLyPct = tahunLalu > 0 ? rataHarian / tahunLalu : 1;
@@ -62,10 +64,10 @@ function buildArchiveFromState(state: AppState): ArchiveRecord {
     const jumlahArea = t.jumlahArea || 0;
     const coverageArea = jumlahArea > 0 ? jumlahYl / jumlahArea : 1;
     const rataVarian: [number, number, number, number] = [
-      divider > 0 ? Math.round(t.penjualanAkm[0] / divider) : 0,
-      divider > 0 ? Math.round(t.penjualanAkm[1] / divider) : 0,
-      divider > 0 ? Math.round(t.penjualanAkm[2] / divider) : 0,
-      divider > 0 ? Math.round(t.penjualanAkm[3] / divider) : 0
+      divider > 0 ? round2(t.penjualanAkm[0] / divider) : 0,
+      divider > 0 ? round2(t.penjualanAkm[1] / divider) : 0,
+      divider > 0 ? round2(t.penjualanAkm[2] / divider) : 0,
+      divider > 0 ? round2(t.penjualanAkm[3] / divider) : 0
     ];
 
     return {
@@ -125,6 +127,64 @@ export default function App() {
   useEffect(() => {
     saveAppState(state);
   }, [state]);
+
+  // Beri tahu aplikasi pembungkus (APK/webview) apakah akun sedang masuk atau keluar,
+  // supaya ikon gerigi link hanya tampil di layar login.
+  useEffect(() => {
+    const kirimStatus = () => {
+      try {
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage({ type: 'yk-auth', loggedIn: !!state.role }, '*');
+        }
+      } catch (_) {}
+    };
+    kirimStatus();
+    const onPesan = (e: MessageEvent) => {
+      if (e.data && e.data.type === 'yk-ping') kirimStatus();
+    };
+    window.addEventListener('message', onPesan);
+    return () => window.removeEventListener('message', onPesan);
+  }, [state.role]);
+
+  // Jembatan kredensial Supabase dengan aplikasi pembungkus (APK).
+  // Di dalam APK, penyimpanan halaman web bisa terpisah/hilang, jadi URL & API key
+  // juga dititipkan ke APK dan diminta kembali setiap aplikasi dibuka.
+  const adaKredRef = useRef(false);
+  useEffect(() => {
+    const { u, k, locked } = state.supabaseConfig;
+    try {
+      if (!window.parent || window.parent === window) return;
+      if (u && k) {
+        adaKredRef.current = true;
+        window.parent.postMessage({ type: 'yk-cred-set', u, k, locked: !!locked }, '*');
+      } else if (adaKredRef.current) {
+        adaKredRef.current = false;
+        window.parent.postMessage({ type: 'yk-cred-clear' }, '*');
+      }
+    } catch (_) {}
+  }, [state.supabaseConfig.u, state.supabaseConfig.k, state.supabaseConfig.locked]);
+
+  useEffect(() => {
+    const onKred = (e: MessageEvent) => {
+      if (e.source !== window.parent) return;
+      const d = e.data;
+      if (!d || d.type !== 'yk-cred') return;
+      if (typeof d.u !== 'string' || typeof d.k !== 'string' || !d.u.trim() || !d.k.trim()) return;
+      setState(prev => {
+        if (prev.supabaseConfig.u && prev.supabaseConfig.k) return prev;
+        const cfg: SupabaseConfig = { u: d.u.trim(), k: d.k.trim(), locked: Boolean(d.locked) };
+        saveSupabaseConfigToVault(cfg);
+        return { ...prev, supabaseConfig: cfg };
+      });
+    };
+    window.addEventListener('message', onKred);
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ type: 'yk-cred-get' }, '*');
+      }
+    } catch (_) {}
+    return () => window.removeEventListener('message', onKred);
+  }, []);
 
   // Fungsi sinkronisasi data menyeluruh (lokal & cloud Supabase jika terhubung)
   const refreshFromCloud = useCallback(async (isManual = false) => {
@@ -196,6 +256,54 @@ export default function App() {
       window.removeEventListener('focus', onVisibilityChange);
     };
   }, [supabaseSig, refreshFromCloud]);
+
+  // Deteksi otomatis saat tanggal kalender berganti hari (misal lewat tengah malam / buka aplikasi di hari baru)
+  useEffect(() => {
+    const checkDateTransition = () => {
+      setState(prev => {
+        const act = computeActiveDate(prev.activePeriod);
+        if (act.date !== prev.activeDate || act.day !== prev.currentDayNum) {
+          const activePjd = prev.pjd?.[act.date] || {};
+          const cleanInputs: Record<number, DailySalesRecord> = {};
+          prev.tkus.forEach((_, idx) => {
+            if (activePjd[idx]) {
+              cleanInputs[idx] = { ...activePjd[idx] };
+            } else {
+              cleanInputs[idx] = {
+                v: [0, 0, 0, 0],
+                b: [0, 0, 0, 0],
+                sold: 0,
+                bb: 0,
+                pdmV: [0, 0, 0, 0],
+                pdm: 0,
+                yl: prev.tkus[idx]?.jumlahYl || 10,
+                ar: prev.tkus[idx]?.jumlahArea || 10,
+                jwp: (prev.tkus[idx]?.jumlahYl || 10) * act.day,
+              };
+            }
+          });
+          return synchronizeAppState({
+            ...prev,
+            activeDate: act.date,
+            currentDayNum: act.day,
+            pembagiHari: act.day,
+            todayInputs: cleanInputs
+          });
+        }
+        return prev;
+      });
+    };
+
+    const dateTimer = setInterval(checkDateTransition, 60000);
+    document.addEventListener('visibilitychange', checkDateTransition);
+    window.addEventListener('focus', checkDateTransition);
+
+    return () => {
+      clearInterval(dateTimer);
+      document.removeEventListener('visibilitychange', checkDateTransition);
+      window.removeEventListener('focus', checkDateTransition);
+    };
+  }, []);
 
   // Dorong perubahan ke Supabase, di-debounce 2.5 detik supaya tidak menulis ke cloud di
   // setiap ketikan/klik (sangat hemat egress), dan dilewati jika data riil tidak berubah.
@@ -302,11 +410,41 @@ export default function App() {
     setState(prev => ({ ...prev, pembagiHariMode: 'tanggal', pembagiHari: getTanggalUpdate(prev) }));
   };
 
-  // Tanggal aktif tidak diatur manual lagi; ia mengikuti kalender (lihat efek sinkronisasi di atas).
-  const handleUpdateActiveDay = (_newDay?: number) => {
+  // Tanggal aktif mengikuti kalender. Saat tanggal berganti, data input form harian otomatis kosong
+  // (atau memuat data tersimpan jika tanggal tersebut sudah pernah disimpan).
+  const handleUpdateActiveDay = (newDay?: number) => {
     setState(prev => {
       const act = computeActiveDate(prev.activePeriod);
-      return { ...prev, currentDayNum: act.day, activeDate: act.date, pembagiHari: act.day };
+      const targetDay = newDay || act.day;
+      const targetDate = `${prev.activePeriod.slice(0, 8)}${String(targetDay).padStart(2, '0')}`;
+      
+      const nextTodayInputs: Record<number, DailySalesRecord> = {};
+      prev.tkus.forEach((t, idx) => {
+        const savedRec = prev.pjd[targetDate]?.[idx];
+        if (savedRec) {
+          nextTodayInputs[idx] = savedRec;
+        } else {
+          nextTodayInputs[idx] = {
+            v: [0, 0, 0, 0],
+            b: [0, 0, 0, 0],
+            sold: 0,
+            bb: 0,
+            pdmV: [0, 0, 0, 0],
+            pdm: 0,
+            yl: t.jumlahYl || 10,
+            ar: t.jumlahArea || 10,
+            jwp: (t.jumlahYl || 10) * targetDay,
+          };
+        }
+      });
+
+      return synchronizeAppState({
+        ...prev,
+        currentDayNum: targetDay,
+        activeDate: targetDate,
+        pembagiHari: targetDay,
+        todayInputs: nextTodayInputs
+      });
     });
   };
 
@@ -402,37 +540,100 @@ export default function App() {
   };
 
   // Pull Targets from Archives
+  // Menarik rata-rata penjualan PER VARIAN (ORI/OM/OS/YT) dari arsip:
+  //  - Bulan lalu  = arsip satu bulan sebelum bulan kerja aktif
+  //  - Tahun lalu  = arsip bulan yang sama di tahun sebelumnya (jika ada)
+  // Poin 6: Jika arsip tidak ditemukan, data dikosongkan (di-set 0) agar bisa diisi manual.
   const handleTarikDariArsip = () => {
-    // Bulan lalu = satu bulan sebelum bulan kerja aktif
     const curP = getPeriodInfo(state);
+    const pad = (n: number) => String(n).padStart(2, '0');
     const prevDate = new Date(curP.year, curP.monthIndex - 1, 1);
-    const prevKey = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
-    const arcBl = state.archives[prevKey];
+    const blKey = `${prevDate.getFullYear()}-${pad(prevDate.getMonth() + 1)}`;
+    const tyKey = `${curP.year - 1}-${pad(curP.monthIndex + 1)}`;
+    const arcBl = state.archives[blKey];
+    const arcTy = state.archives[tyKey];
 
-    if (!arcBl) {
-      showToast(`Arsip bulan lalu (${curP.bulanLaluLabel}) belum tersedia di database.`, 'error');
-      return;
-    }
+    const VCODES: VariantCode[] = ['YO', 'OM', 'OS', 'YT'];
+    // Rata-rata per hari tiap varian dari satu baris arsip (dibulatkan ke bawah)
+    const avgPerVariant = (row: ArchiveRow, days: number): [number, number, number, number] => {
+      if (row.rataVarian && row.rataVarian.length === 4) {
+        return row.rataVarian.map(v => Math.floor(Number(v) || 0)) as [number, number, number, number];
+      }
+      const d = days > 0 ? days : 1;
+      return [0, 1, 2, 3].map(i => Math.floor((Number(row.varian?.[i]) || 0) / d)) as [number, number, number, number];
+    };
+
+    let filledBl = 0;
+    let filledTy = 0;
 
     setState(prev => {
-      const nextBl = [...prev.targetBulanLalu];
+      const nextMap = {
+        YO: { ...(prev.targetPerVariant?.YO || {}) },
+        OM: { ...(prev.targetPerVariant?.OM || {}) },
+        OS: { ...(prev.targetPerVariant?.OS || {}) },
+        YT: { ...(prev.targetPerVariant?.YT || {}) }
+      };
+      // Jika arsip tidak ada, kosongkan (0) agar diisi manual sesuai Poin 6
+      const nextBl = arcBl ? [...prev.targetBulanLalu] : prev.tkus.map(() => 0);
+      const nextTy = arcTy ? [...prev.targetTahunLalu] : prev.tkus.map(() => 0);
 
       prev.tkus.forEach((t, idx) => {
+        const nama = t.nama.toLowerCase();
         if (arcBl) {
-          const row = arcBl.rows.find(r => r.nama.toLowerCase() === t.nama.toLowerCase());
+          const row = arcBl.rows.find(r => r.nama.toLowerCase() === nama);
           if (row) {
-            nextBl[idx] = Math.round(row.total / arcBl.d);
+            const avg = avgPerVariant(row, arcBl.d);
+            VCODES.forEach((v, i) => {
+              nextMap[v][idx] = { ...(nextMap[v][idx] || {}), bl: avg[i] } as any;
+            });
+            nextBl[idx] = avg.reduce((a, b) => a + b, 0);
+            filledBl++;
+          } else {
+            VCODES.forEach((v) => {
+              nextMap[v][idx] = { ...(nextMap[v][idx] || {}), bl: 0 } as any;
+            });
+            nextBl[idx] = 0;
           }
+        } else {
+          VCODES.forEach((v) => {
+            nextMap[v][idx] = { ...(nextMap[v][idx] || {}), bl: 0 } as any;
+          });
+        }
+
+        if (arcTy) {
+          const row = arcTy.rows.find(r => r.nama.toLowerCase() === nama);
+          if (row) {
+            const avg = avgPerVariant(row, arcTy.d);
+            VCODES.forEach((v, i) => {
+              nextMap[v][idx] = { ...(nextMap[v][idx] || {}), ty: avg[i] } as any;
+            });
+            nextTy[idx] = avg.reduce((a, b) => a + b, 0);
+            filledTy++;
+          } else {
+            VCODES.forEach((v) => {
+              nextMap[v][idx] = { ...(nextMap[v][idx] || {}), ty: 0 } as any;
+            });
+            nextTy[idx] = 0;
+          }
+        } else {
+          VCODES.forEach((v) => {
+            nextMap[v][idx] = { ...(nextMap[v][idx] || {}), ty: 0 } as any;
+          });
         }
       });
 
       return {
         ...prev,
-        targetBulanLalu: nextBl
+        targetPerVariant: nextMap,
+        targetBulanLalu: nextBl,
+        targetTahunLalu: nextTy
       };
     });
 
-    showToast(`Target rata-rata bulan lalu berhasil disinkronkan dari arsip ${curP.bulanLaluLabel}!`, 'success');
+    const parts: string[] = [];
+    parts.push(arcBl ? `bulan lalu (${curP.bulanLaluLabel}) terisi` : `bulan lalu (${curP.bulanLaluLabel}) dikosongkan (silakan isi manual)`);
+    parts.push(arcTy ? `tahun lalu (${curP.tahunLaluLabel}) terisi` : `tahun lalu (${curP.tahunLaluLabel}) dikosongkan (silakan isi manual)`);
+    showToast(`Tarik dari arsip: ${parts.join('; ')}.`, 'info');
   };
 
   // Daily Data & TKU Input
@@ -581,7 +782,26 @@ export default function App() {
   const handleUpdateTkuProfile = (index: number, field: keyof TkuItem, value: any) => {
     setState(prev => {
       const nextTkus = [...prev.tkus];
+      const oldNama = (nextTkus[index]?.nama || '').trim();
       nextTkus[index] = { ...nextTkus[index], [field]: value };
+
+      // Ganti nama TKU -> ikut mengganti nama di SEMUA arsip (tersimpan juga ke Supabase
+      // karena arsip bagian dari state). Field lain (PIC, alamat, HP, dll) hanya ada di
+      // data TKU, jadi otomatis ikut di semua tampilan.
+      if (field === 'nama') {
+        const newNama = String(value || '').trim();
+        const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+        if (newNama && oldNama && !sameName(oldNama, newNama)) {
+          const nextArchives: typeof prev.archives = {};
+          Object.keys(prev.archives || {}).forEach(k => {
+            const arc = prev.archives[k];
+            nextArchives[k] = arc?.rows?.some(r => sameName(r.nama, oldNama))
+              ? { ...arc, rows: arc.rows.map(r => (sameName(r.nama, oldNama) ? { ...r, nama: newNama } : r)) }
+              : arc;
+          });
+          return { ...prev, tkus: nextTkus, archives: nextArchives };
+        }
+      }
       return { ...prev, tkus: nextTkus };
     });
   };
@@ -617,8 +837,8 @@ export default function App() {
         penjualanAkm: [0, 0, 0, 0]
       };
       const nextTkus = [...prev.tkus, newTku];
-      const nextBl = [...prev.targetBulanLalu, Math.round(newTkuData.targetHarian * 0.95)];
-      const nextTy = [...prev.targetTahunLalu, Math.round(newTkuData.targetHarian * 0.98)];
+      const nextBl = [...prev.targetBulanLalu, round2(newTkuData.targetHarian * 0.95)];
+      const nextTy = [...prev.targetTahunLalu, round2(newTkuData.targetHarian * 0.98)];
       const nextBd = { ...prev.breakdown, [nextTkus.length - 1]: Array(31).fill(newTkuData.targetHarian) };
 
       return {
@@ -744,6 +964,45 @@ export default function App() {
 
   const handleSelectArchive = (archiveKey: string) => {
     setState(prev => ({ ...prev, activeArchiveKey: archiveKey }));
+  };
+
+  // Hapus arsip satu bulan (misal salah klik "Simpan Bulan Ini"). Data kerja bulan tersebut
+  // (penjualan harian, dll) TIDAK ikut terhapus — hanya catatan arsipnya.
+  const handleDeleteArchive = async (archiveKey: string) => {
+    if (!state.archives[archiveKey]) return;
+    if (INITIAL_ARCHIVES[archiveKey]) {
+      showToast('Arsip bawaan (data resmi Jan–Agu 2026) tidak bisa dihapus.', 'error');
+      return;
+    }
+    const remaining = { ...state.archives };
+    delete remaining[archiveKey];
+    const remainingKeys = Object.keys(remaining).sort((a, b) => b.localeCompare(a));
+    const nextActive = state.activeArchiveKey && state.activeArchiveKey !== archiveKey && remaining[state.activeArchiveKey]
+      ? state.activeArchiveKey
+      : (remainingKeys[0] || null);
+    const nextState: AppState = {
+      ...state,
+      archives: remaining,
+      activeArchiveKey: nextActive
+    };
+    setState(nextState);
+    saveAppState(nextState);
+
+    if (state.supabaseConfig.u && state.supabaseConfig.k) {
+      setIsSyncing(true);
+      setSyncStatus('syncing');
+      const ok = await saveStateToSupabase(nextState, true);
+      setIsSyncing(false);
+      setSyncStatus(ok ? 'synced' : 'error');
+      showToast(
+        ok
+          ? `Arsip ${archiveKey} berhasil dihapus (lokal & Supabase).`
+          : `Arsip ${archiveKey} dihapus di perangkat ini, tapi GAGAL dikirim ke Supabase. Cek koneksi lalu tekan simpan/sinkron.`,
+        ok ? 'success' : 'error'
+      );
+    } else {
+      showToast(`Arsip ${archiveKey} berhasil dihapus.`, 'success');
+    }
   };
 
   const handleForcePushArchive = async () => {
@@ -880,8 +1139,6 @@ export default function App() {
         yl: state.tkus[idx]?.jumlahYl || ylCounts[idx] || 10,
         ar: state.tkus[idx]?.jumlahArea || areaCounts[idx] || 10,
         jwp: (state.tkus[idx]?.jumlahYl || ylCounts[idx] || 10) * dayNum,
-        absen: 0,
-        frek: 0
       };
     });
 
@@ -937,7 +1194,7 @@ export default function App() {
 
   // Render Admin or TKU App View
   return (
-    <div className={`min-h-screen bg-neutral-100/60 dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100 flex flex-col font-sans selection:bg-rose-500 selection:text-white transition-colors ${state.theme === 'dark' ? 'dark' : ''}`}>
+    <div className={`min-h-screen bg-neutral-100/60 dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100 flex flex-col font-sans selection:bg-brand-500 selection:text-white transition-colors ${state.theme === 'dark' ? 'dark' : ''}`}>
       {/* Top Bar Navigation */}
       <Navbar
         state={state}
@@ -1004,7 +1261,7 @@ export default function App() {
             title="Buka Menu Samping"
             className="fixed bottom-6 left-6 z-40 hidden md:flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-neutral-900/90 dark:bg-white/90 text-white dark:text-neutral-900 text-xs font-bold shadow-2xl backdrop-blur-md hover:scale-105 transition-all border border-neutral-700 dark:border-neutral-200 cursor-pointer"
           >
-            <PanelLeft className="w-4 h-4 text-rose-500" />
+            <PanelLeft className="w-4 h-4 text-brand-500" />
             <span>Buka Menu</span>
           </button>
         )}
@@ -1022,7 +1279,6 @@ export default function App() {
               onUpdateBreakdownDay={handleUpdateBreakdownDay}
               onBatchUpdateBreakdown={handleBatchUpdateBreakdown}
               showToast={showToast}
-              onSelectTku={(idx) => setState(prev => ({ ...prev, activeTkuId: idx }))}
               onSwitchToAdmin={() => {
                 setState(prev => ({ ...prev, role: 'a', currentMenu: 'Dashboard' }));
                 showToast('Beralih ke Mode Admin (Cabang)', 'info');
@@ -1037,10 +1293,6 @@ export default function App() {
                   onUpdateRayon={handleUpdateRayon} 
                   onUpdatePembagiHari={handleUpdatePembagiHari}
                   onUpdateActiveDay={handleUpdateActiveDay}
-                  onSwitchToTku={(idx) => {
-                    setState(prev => ({ ...prev, role: 't', activeTkuId: idx }));
-                    showToast(`Beralih ke akun ${state.tkus[idx]?.nama}`, 'info');
-                  }}
                 />
               )}
               {state.currentMenu === 'Penjualan Harian' && (
@@ -1093,6 +1345,7 @@ export default function App() {
                   onUnlockArchive={handleUnlockArchive}
                   onImportCsvArchive={handleImportCsvArchive}
                   onSelectArchive={handleSelectArchive}
+                  onDeleteArchive={handleDeleteArchive}
                   showToast={showToast}
                   isSyncing={isSyncing}
                   syncStatus={syncStatus}

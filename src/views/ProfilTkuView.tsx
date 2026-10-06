@@ -1,3 +1,4 @@
+import { useConfirm } from '../components/ConfirmDialog';
 import React, { useState } from 'react';
 import { Pencil, Save, X } from 'lucide-react';
 import { 
@@ -32,6 +33,7 @@ export const ProfilTkuView: React.FC<ProfilTkuViewProps> = ({
   onAddTku,
   showToast
 }) => {
+  const { ask, dialog } = useConfirm();
   const [showAddForm, setShowAddForm] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [draft, setDraft] = useState<TkuItem[]>([]);
@@ -112,11 +114,8 @@ export const ProfilTkuView: React.FC<ProfilTkuViewProps> = ({
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 p-5 bg-white dark:bg-neutral-900 rounded-2xl border border-neutral-200 dark:border-neutral-800 shadow-sm">
         <div>
           <h1 className="text-xl font-bold tracking-tight text-neutral-900 dark:text-neutral-100">
-            Profil Tempat Kegiatan Usaha (TKU)
+            Profil TKU
           </h1>
-          <p className="text-xs text-neutral-500">
-            Klik Edit untuk mengubah data, lalu Simpan. Gunakan Tambah TKU untuk unit baru.
-          </p>
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
@@ -148,7 +147,7 @@ export const ProfilTkuView: React.FC<ProfilTkuViewProps> = ({
               </button>
               <button
                 onClick={() => setShowAddForm(!showAddForm)}
-                className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-xl bg-rose-600 hover:bg-rose-700 text-white shadow-sm shadow-rose-600/20 transition-all"
+                className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-xl bg-brand-600 hover:bg-brand-700 text-white shadow-sm shadow-brand-600/20 transition-all"
               >
                 <Plus className="w-4 h-4" />
                 <span>{showAddForm ? 'Tutup Form' : 'Tambah TKU'}</span>
@@ -162,12 +161,12 @@ export const ProfilTkuView: React.FC<ProfilTkuViewProps> = ({
       {showAddForm && (
         <form
           onSubmit={handleCreate}
-          className="p-5 bg-white dark:bg-neutral-900 rounded-2xl border border-rose-200 dark:border-rose-900/60 shadow-md space-y-4 animate-in fade-in"
+          className="p-5 bg-white dark:bg-neutral-900 rounded-2xl border border-brand-200 dark:border-brand-900/60 shadow-md space-y-4 animate-in fade-in"
         >
           <div className="flex items-center gap-2">
-            <Building className="w-4 h-4 text-rose-600" />
+            <Building className="w-4 h-4 text-brand-600" />
             <h2 className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
-              Formulir Tambah Unit TKU Baru
+              Tambah TKU
             </h2>
           </div>
 
@@ -276,7 +275,7 @@ export const ProfilTkuView: React.FC<ProfilTkuViewProps> = ({
             </button>
             <button
               type="submit"
-              className="px-4 py-2 rounded-lg bg-rose-600 text-white text-xs font-semibold hover:bg-rose-700 shadow-sm"
+              className="px-4 py-2 rounded-lg bg-brand-600 text-white text-xs font-semibold hover:bg-brand-700 shadow-sm"
             >
               Simpan TKU Baru
             </button>
@@ -289,11 +288,8 @@ export const ProfilTkuView: React.FC<ProfilTkuViewProps> = ({
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-base font-bold text-neutral-900 dark:text-neutral-100">
-              Daftar Informasi Unit TKU Cabang Jember
+              Daftar TKU
             </h2>
-            <p className="text-xs text-neutral-500">
-              Data hanya bisa diubah setelah menekan tombol Edit
-            </p>
           </div>
           <span className="text-xs font-mono text-neutral-500">
             {state.tkus.length} Unit Terdaftar
@@ -322,7 +318,7 @@ export const ProfilTkuView: React.FC<ProfilTkuViewProps> = ({
                 const area = t.jumlahArea || 10;
                 const yl = t.jumlahYl || 10;
                 const coverPct = area > 0 ? (yl / area) : 1;
-                const inp = "w-full px-2 py-1 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 focus:border-rose-500 focus:outline-none";
+                const inp = "w-full px-2 py-1 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 focus:border-brand-500 focus:outline-none";
                 const dash = (v?: string | number) => (v === undefined || v === '' ? <span className="text-neutral-300">-</span> : v);
                 return (
                 <tr
@@ -433,13 +429,20 @@ export const ProfilTkuView: React.FC<ProfilTkuViewProps> = ({
                         </button>
                         <button
                           onClick={() => {
-                            if (confirm(`Hapus unit TKU "${t.nama}"?`)) {
-                              onDeleteTku(idx);
-                              setDraft(prev => prev.filter((_, i) => i !== idx));
-                              showToast(`${t.nama} dihapus`, 'info');
-                            }
+                            ask({
+                              title: `Hapus Unit TKU?`,
+                              message: `Apakah Anda yakin ingin menghapus unit TKU "${t.nama}"?
+Semua riwayat dan data terkait akan ikut terhapus.`,
+                              confirmLabel: 'Ya, Hapus Unit',
+                              tone: 'danger',
+                              onConfirm: () => {
+                                onDeleteTku(idx);
+                                setDraft(prev => prev.filter((_, i) => i !== idx));
+                                showToast(`${t.nama} dihapus`, 'info');
+                              }
+                            });
                           }}
-                          className="p-1 rounded-lg text-neutral-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
+                          className="p-1 rounded-lg text-neutral-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors"
                           title="Hapus Unit TKU"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
@@ -454,6 +457,7 @@ export const ProfilTkuView: React.FC<ProfilTkuViewProps> = ({
           </table>
         </div>
       </div>
+      {dialog}
     </div>
   );
 };

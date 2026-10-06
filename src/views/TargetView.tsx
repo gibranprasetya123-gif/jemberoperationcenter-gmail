@@ -8,7 +8,7 @@ import {
   BarChart3
 } from 'lucide-react';
 import { AppState, VARIANTS, VariantCode } from '../types';
-import { formatNumber, formatPercent, getPeriodInfo } from '../services/storage';
+import { formatDecimal, formatPercent, getPeriodInfo } from '../services/storage';
 
 interface TargetViewProps {
   state: AppState;
@@ -21,6 +21,32 @@ interface TargetViewProps {
 }
 
 type TargetViewCategory = 'target_harian' | 'bulan_lalu' | 'tahun_lalu' | 'komparasi';
+
+
+// Kolom isian angka desimal (2 angka di belakang koma). Saat diketik, boleh pakai titik atau koma;
+// saat tidak dipilih, tampil rapi 2 desimal (mis. 300,98 tersimpan sebagai 300.98).
+const DecimalInput: React.FC<{ value: number; onCommit: (v: number) => void; className?: string }> = ({ value, onCommit, className }) => {
+  const [focused, setFocused] = useState(false);
+  const [text, setText] = useState('');
+  const shown = focused ? text : (value ? formatDecimal(value) : '');
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      value={shown}
+      placeholder="0,00"
+      onFocus={() => { setText(value ? String(value).replace('.', ',') : ''); setFocused(true); }}
+      onBlur={() => setFocused(false)}
+      onChange={(e) => {
+        const raw = e.target.value.replace(/\./g, ',');
+        if (!/^\d*,?\d{0,2}$/.test(raw)) return;
+        setText(raw);
+        onCommit(Number(raw.replace(',', '.')) || 0);
+      }}
+      className={className}
+    />
+  );
+};
 
 export const TargetView: React.FC<TargetViewProps> = ({
   state,
@@ -67,7 +93,7 @@ export const TargetView: React.FC<TargetViewProps> = ({
   const handleVariantFieldChange = (variant: VariantCode, tkuIdx: number, field: 'tg' | 'bl' | 'ty', value: number) => {
     onUpdateVariantTarget(variant, tkuIdx, field, value);
     const label = variant === 'YO' ? 'ORI' : variant;
-    showToast(`Target ${label} ${state.tkus[tkuIdx]?.nama} disetel ke ${formatNumber(value)} btl`, 'success');
+    showToast(`Target ${label} ${state.tkus[tkuIdx]?.nama} disetel ke ${formatDecimal(value)} btl`, 'success');
   };
 
   return (
@@ -76,11 +102,11 @@ export const TargetView: React.FC<TargetViewProps> = ({
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 p-5 bg-white dark:bg-neutral-900 rounded-2xl border border-neutral-200 dark:border-neutral-800 shadow-sm">
         <div>
           <h1 className="text-xl font-bold tracking-tight text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
-            <Target className="w-5 h-5 text-rose-600 shrink-0" />
-            <span>Target & Rekapitulasi Penjualan per TKU per Varian</span>
+            <Target className="w-5 h-5 text-brand-600 shrink-0" />
+            <span>Target</span>
           </h1>
           <p className="text-xs text-neutral-500 mt-1">
-            Data target harian {period.label}, realisasi bulan lalu ({period.bulanLaluLabel}), dan benchmark tahun lalu ({period.tahunLaluLabel}) per varian produk
+            {period.label}
           </p>
         </div>
 
@@ -96,64 +122,64 @@ export const TargetView: React.FC<TargetViewProps> = ({
       </div>
 
       {/* Target Totals Summary Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-stretch">
-        <div className="p-4 bg-gradient-to-br from-rose-50/80 to-white dark:from-rose-950/20 dark:to-neutral-900 rounded-2xl border border-rose-200 dark:border-rose-900/50 shadow-sm flex flex-col justify-between">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-stretch">
+        <div className="p-4 bg-gradient-to-br from-brand-50/80 to-white dark:from-brand-950/20 dark:to-neutral-900 rounded-2xl border border-brand-200 dark:border-brand-900/50 shadow-sm flex flex-col justify-between min-w-0 h-full">
           <div>
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold uppercase tracking-wider text-rose-700 dark:text-rose-400">
-                Target Harian {period.label}
+            <div className="flex items-start justify-between gap-2">
+              <span className="text-xs font-bold uppercase tracking-wider leading-tight min-w-0 break-words text-brand-700 dark:text-brand-400">
+                Target Harian
               </span>
-              <Calendar className="w-4 h-4 text-rose-500" />
+              <Calendar className="w-4 h-4 text-brand-500 shrink-0" />
             </div>
-            <div className="text-2xl font-bold font-mono text-rose-600 dark:text-rose-400 mt-2">
-              {formatNumber(totalTgCabang)} <span className="text-xs font-sans text-neutral-500">btl/hari</span>
+            <div className="text-2xl font-bold font-mono text-brand-600 dark:text-brand-400 mt-2">
+              {formatDecimal(totalTgCabang)} <span className="text-xs font-sans text-neutral-500">btl/hari</span>
             </div>
           </div>
-          <div className="mt-3 pt-3 border-t border-rose-100 dark:border-rose-900/40 grid grid-cols-4 gap-1 text-[11px] font-mono">
-            <div><span className="text-neutral-400 block text-[9px]">ORI</span><span className="font-bold text-neutral-800 dark:text-neutral-200">{formatNumber(totalOriTg)}</span></div>
-            <div><span className="text-amber-500 block text-[9px]">OM</span><span className="font-bold text-amber-600 dark:text-amber-400">{formatNumber(totalOmTg)}</span></div>
-            <div><span className="text-rose-400 block text-[9px]">OS</span><span className="font-bold text-rose-600 dark:text-rose-400">{formatNumber(totalOsTg)}</span></div>
-            <div><span className="text-sky-500 block text-[9px]">YT</span><span className="font-bold text-sky-600 dark:text-sky-400">{formatNumber(totalYtTg)}</span></div>
+          <div className="mt-3 pt-3 border-t border-brand-100 dark:border-brand-900/40 grid grid-cols-4 gap-2 text-[11px] font-mono [&>div]:min-w-0 [&>div]:text-center">
+            <div><span className="text-neutral-400 block text-[9px]">ORI</span><span className="font-bold text-neutral-800 dark:text-neutral-200">{formatDecimal(totalOriTg)}</span></div>
+            <div><span className="text-amber-500 block text-[9px]">OM</span><span className="font-bold text-amber-600 dark:text-amber-400">{formatDecimal(totalOmTg)}</span></div>
+            <div><span className="text-pink-400 block text-[9px]">OS</span><span className="font-bold text-pink-600 dark:text-pink-400">{formatDecimal(totalOsTg)}</span></div>
+            <div><span className="text-sky-500 block text-[9px]">YT</span><span className="font-bold text-sky-600 dark:text-sky-400">{formatDecimal(totalYtTg)}</span></div>
           </div>
         </div>
 
-        <div className="p-4 bg-white dark:bg-neutral-900 rounded-2xl border border-neutral-200 dark:border-neutral-800 shadow-sm flex flex-col justify-between">
+        <div className="p-4 bg-white dark:bg-neutral-900 rounded-2xl border border-neutral-200 dark:border-neutral-800 shadow-sm flex flex-col justify-between min-w-0 h-full">
           <div>
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold uppercase tracking-wider text-neutral-600 dark:text-neutral-400">
+            <div className="flex items-start justify-between gap-2">
+              <span className="text-xs font-bold uppercase tracking-wider leading-tight min-w-0 break-words text-neutral-600 dark:text-neutral-400">
                 Bulan Lalu ({period.bulanLaluLabel})
               </span>
-              <History className="w-4 h-4 text-neutral-400" />
+              <History className="w-4 h-4 text-neutral-400 shrink-0" />
             </div>
             <div className="text-2xl font-bold font-mono text-neutral-900 dark:text-neutral-100 mt-2">
-              {formatNumber(totalBlCabang)} <span className="text-xs font-sans text-neutral-500">btl/hari</span>
+              {formatDecimal(totalBlCabang)} <span className="text-xs font-sans text-neutral-500">btl/hari</span>
             </div>
           </div>
-          <div className="mt-3 pt-3 border-t border-neutral-100 dark:border-neutral-800 grid grid-cols-4 gap-1 text-[11px] font-mono">
-            <div><span className="text-neutral-400 block text-[9px]">ORI</span><span className="font-semibold text-neutral-700 dark:text-neutral-300">{formatNumber(totalOriBl)}</span></div>
-            <div><span className="text-amber-500 block text-[9px]">OM</span><span className="font-semibold text-amber-600 dark:text-amber-400">{formatNumber(totalOmBl)}</span></div>
-            <div><span className="text-rose-400 block text-[9px]">OS</span><span className="font-semibold text-rose-600 dark:text-rose-400">{formatNumber(totalOsBl)}</span></div>
-            <div><span className="text-sky-500 block text-[9px]">YT</span><span className="font-semibold text-sky-600 dark:text-sky-400">{formatNumber(totalYtBl)}</span></div>
+          <div className="mt-3 pt-3 border-t border-neutral-100 dark:border-neutral-800 grid grid-cols-4 gap-2 text-[11px] font-mono [&>div]:min-w-0 [&>div]:text-center">
+            <div><span className="text-neutral-400 block text-[9px]">ORI</span><span className="font-semibold text-neutral-700 dark:text-neutral-300">{formatDecimal(totalOriBl)}</span></div>
+            <div><span className="text-amber-500 block text-[9px]">OM</span><span className="font-semibold text-amber-600 dark:text-amber-400">{formatDecimal(totalOmBl)}</span></div>
+            <div><span className="text-pink-400 block text-[9px]">OS</span><span className="font-semibold text-pink-600 dark:text-pink-400">{formatDecimal(totalOsBl)}</span></div>
+            <div><span className="text-sky-500 block text-[9px]">YT</span><span className="font-semibold text-sky-600 dark:text-sky-400">{formatDecimal(totalYtBl)}</span></div>
           </div>
         </div>
 
-        <div className="p-4 bg-white dark:bg-neutral-900 rounded-2xl border border-neutral-200 dark:border-neutral-800 shadow-sm flex flex-col justify-between">
+        <div className="p-4 bg-white dark:bg-neutral-900 rounded-2xl border border-neutral-200 dark:border-neutral-800 shadow-sm flex flex-col justify-between min-w-0 h-full">
           <div>
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold uppercase tracking-wider text-neutral-600 dark:text-neutral-400">
+            <div className="flex items-start justify-between gap-2">
+              <span className="text-xs font-bold uppercase tracking-wider leading-tight min-w-0 break-words text-neutral-600 dark:text-neutral-400">
                 Tahun Lalu ({period.tahunLaluLabel})
               </span>
-              <TrendingUp className="w-4 h-4 text-neutral-400" />
+              <TrendingUp className="w-4 h-4 text-neutral-400 shrink-0" />
             </div>
             <div className="text-2xl font-bold font-mono text-neutral-900 dark:text-neutral-100 mt-2">
-              {formatNumber(totalTyCabang)} <span className="text-xs font-sans text-neutral-500">btl/hari</span>
+              {formatDecimal(totalTyCabang)} <span className="text-xs font-sans text-neutral-500">btl/hari</span>
             </div>
           </div>
-          <div className="mt-3 pt-3 border-t border-neutral-100 dark:border-neutral-800 grid grid-cols-4 gap-1 text-[11px] font-mono">
-            <div><span className="text-neutral-400 block text-[9px]">ORI</span><span className="font-semibold text-neutral-700 dark:text-neutral-300">{formatNumber(totalOriTy)}</span></div>
-            <div><span className="text-amber-500 block text-[9px]">OM</span><span className="font-semibold text-amber-600 dark:text-amber-400">{formatNumber(totalOmTy)}</span></div>
+          <div className="mt-3 pt-3 border-t border-neutral-100 dark:border-neutral-800 grid grid-cols-4 gap-2 text-[11px] font-mono [&>div]:min-w-0 [&>div]:text-center">
+            <div><span className="text-neutral-400 block text-[9px]">ORI</span><span className="font-semibold text-neutral-700 dark:text-neutral-300">{formatDecimal(totalOriTy)}</span></div>
+            <div><span className="text-amber-500 block text-[9px]">OM</span><span className="font-semibold text-amber-600 dark:text-amber-400">{formatDecimal(totalOmTy)}</span></div>
             <div><span className="text-neutral-400 block text-[9px]">OS</span><span className="text-neutral-400">—</span></div>
-            <div><span className="text-sky-500 block text-[9px]">YT</span><span className="font-semibold text-sky-600 dark:text-sky-400">{formatNumber(totalYtTy)}</span></div>
+            <div><span className="text-sky-500 block text-[9px]">YT</span><span className="font-semibold text-sky-600 dark:text-sky-400">{formatDecimal(totalYtTy)}</span></div>
           </div>
         </div>
       </div>
@@ -167,7 +193,7 @@ export const TargetView: React.FC<TargetViewProps> = ({
               onClick={() => setActiveCategory('target_harian')}
               className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all ${
                 activeCategory === 'target_harian'
-                  ? 'bg-rose-600 text-white shadow-sm ring-1 ring-rose-600'
+                  ? 'bg-brand-600 text-white shadow-sm ring-1 ring-brand-600'
                   : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-700'
               }`}
             >
@@ -179,7 +205,7 @@ export const TargetView: React.FC<TargetViewProps> = ({
               onClick={() => setActiveCategory('bulan_lalu')}
               className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all ${
                 activeCategory === 'bulan_lalu'
-                  ? 'bg-rose-600 text-white shadow-sm ring-1 ring-rose-600'
+                  ? 'bg-brand-600 text-white shadow-sm ring-1 ring-brand-600'
                   : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-700'
               }`}
             >
@@ -191,7 +217,7 @@ export const TargetView: React.FC<TargetViewProps> = ({
               onClick={() => setActiveCategory('tahun_lalu')}
               className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all ${
                 activeCategory === 'tahun_lalu'
-                  ? 'bg-rose-600 text-white shadow-sm ring-1 ring-rose-600'
+                  ? 'bg-brand-600 text-white shadow-sm ring-1 ring-brand-600'
                   : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-700'
               }`}
             >
@@ -203,7 +229,7 @@ export const TargetView: React.FC<TargetViewProps> = ({
               onClick={() => setActiveCategory('komparasi')}
               className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all ${
                 activeCategory === 'komparasi'
-                  ? 'bg-rose-600 text-white shadow-sm ring-1 ring-rose-600'
+                  ? 'bg-brand-600 text-white shadow-sm ring-1 ring-brand-600'
                   : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-700'
               }`}
             >
@@ -213,18 +239,18 @@ export const TargetView: React.FC<TargetViewProps> = ({
           </div>
 
           <div className="flex items-center gap-2 text-xs text-neutral-500">
-            <Info className="w-3.5 h-3.5 text-rose-500" />
+            <Info className="w-3.5 h-3.5 text-brand-500" />
             <span>Angka dalam tabel dapat diedit secara langsung</span>
           </div>
         </div>
 
-        {/* 1. TABEL TARGET HARIAN SEPTEMBER 2026 (PER VARIAN LENGKAP) */}
+        {/* 1. TABEL TARGET HARIAN */}
         {activeCategory === 'target_harian' && (
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
-                <span>Tabel Target Harian {period.label} per Varian per TKU</span>
-                <span className="text-xs px-2 py-0.5 rounded-md bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400 font-semibold">
+                <span>Target Harian</span>
+                <span className="text-xs px-2 py-0.5 rounded-md bg-brand-50 text-brand-700 dark:bg-brand-950/40 dark:text-brand-400 font-semibold">
                   Satuan: Botol/Hari
                 </span>
               </h2>
@@ -243,13 +269,13 @@ export const TargetView: React.FC<TargetViewProps> = ({
                     <th className="py-2.5 px-3 font-semibold text-right text-amber-700 dark:text-amber-400">
                       OM (Mangga)
                     </th>
-                    <th className="py-2.5 px-3 font-semibold text-right text-rose-700 dark:text-rose-400">
+                    <th className="py-2.5 px-3 font-semibold text-right text-pink-700 dark:text-pink-400">
                       OS (Strawberry)
                     </th>
                     <th className="py-2.5 px-3 font-semibold text-right text-sky-700 dark:text-sky-400">
                       YT (Light)
                     </th>
-                    <th className="py-2.5 px-4 font-bold text-right text-rose-700 dark:text-rose-400 bg-rose-50/50 dark:bg-rose-950/20">
+                    <th className="py-2.5 px-4 font-bold text-right text-brand-700 dark:text-brand-400 bg-brand-50/50 dark:bg-brand-950/20">
                       Total Target (btl/hr)
                     </th>
                   </tr>
@@ -275,39 +301,19 @@ export const TargetView: React.FC<TargetViewProps> = ({
                         <td className="py-2.5 px-3 font-sans font-semibold text-neutral-900 dark:text-neutral-100">{t.nama}</td>
                         <td className="py-2.5 px-2 text-center text-neutral-500 font-sans">R1</td>
                         <td className="py-1.5 px-2 text-right">
-                          <input
-                            type="number"
-                            value={ori || ''}
-                            onChange={(e) => handleVariantFieldChange('YO', idx, 'tg', Number(e.target.value))}
-                            className="w-20 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 font-bold text-neutral-900 dark:text-neutral-100 focus:ring-1 focus:ring-rose-500 focus:outline-none text-xs"
-                          />
+                          <DecimalInput value={ori} onCommit={(v) => handleVariantFieldChange('YO', idx, 'tg', v)} className="w-20 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 font-bold text-neutral-900 dark:text-neutral-100 focus:ring-1 focus:ring-brand-500 focus:outline-none text-xs" />
                         </td>
                         <td className="py-1.5 px-2 text-right">
-                          <input
-                            type="number"
-                            value={om || ''}
-                            onChange={(e) => handleVariantFieldChange('OM', idx, 'tg', Number(e.target.value))}
-                            className="w-20 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 font-bold text-amber-700 dark:text-amber-400 focus:ring-1 focus:ring-amber-500 focus:outline-none text-xs"
-                          />
+                          <DecimalInput value={om} onCommit={(v) => handleVariantFieldChange('OM', idx, 'tg', v)} className="w-20 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 font-bold text-amber-700 dark:text-amber-400 focus:ring-1 focus:ring-amber-500 focus:outline-none text-xs" />
                         </td>
                         <td className="py-1.5 px-2 text-right">
-                          <input
-                            type="number"
-                            value={os || ''}
-                            onChange={(e) => handleVariantFieldChange('OS', idx, 'tg', Number(e.target.value))}
-                            className="w-20 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 font-bold text-rose-700 dark:text-rose-400 focus:ring-1 focus:ring-rose-500 focus:outline-none text-xs"
-                          />
+                          <DecimalInput value={os} onCommit={(v) => handleVariantFieldChange('OS', idx, 'tg', v)} className="w-20 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 font-bold text-pink-700 dark:text-pink-400 focus:ring-1 focus:ring-pink-500 focus:outline-none text-xs" />
                         </td>
                         <td className="py-1.5 px-2 text-right">
-                          <input
-                            type="number"
-                            value={yt || ''}
-                            onChange={(e) => handleVariantFieldChange('YT', idx, 'tg', Number(e.target.value))}
-                            className="w-20 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 font-bold text-sky-700 dark:text-sky-400 focus:ring-1 focus:ring-sky-500 focus:outline-none text-xs"
-                          />
+                          <DecimalInput value={yt} onCommit={(v) => handleVariantFieldChange('YT', idx, 'tg', v)} className="w-20 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 font-bold text-sky-700 dark:text-sky-400 focus:ring-1 focus:ring-sky-500 focus:outline-none text-xs" />
                         </td>
-                        <td className="py-2.5 px-4 text-right font-bold text-rose-600 dark:text-rose-400 bg-rose-50/30 dark:bg-rose-950/10">
-                          {formatNumber(rowSum)}
+                        <td className="py-2.5 px-4 text-right font-bold text-brand-600 dark:text-brand-400 bg-brand-50/30 dark:bg-brand-950/10">
+                          {formatDecimal(rowSum)}
                         </td>
                       </tr>
                     );
@@ -327,11 +333,11 @@ export const TargetView: React.FC<TargetViewProps> = ({
                         <td colSpan={3} className="py-2 px-3 font-sans text-neutral-800 dark:text-neutral-200">
                           Total Rayon 1
                         </td>
-                        <td className="py-2 px-3 text-right text-neutral-800 dark:text-neutral-200">{formatNumber(r1Ori)}</td>
-                        <td className="py-2 px-3 text-right text-amber-600 dark:text-amber-400">{formatNumber(r1Om)}</td>
-                        <td className="py-2 px-3 text-right text-rose-600 dark:text-rose-400">{formatNumber(r1Os)}</td>
-                        <td className="py-2 px-3 text-right text-sky-600 dark:text-sky-400">{formatNumber(r1Yt)}</td>
-                        <td className="py-2 px-4 text-right text-rose-600 dark:text-rose-400 bg-rose-50/50 dark:bg-rose-950/20 font-extrabold">{formatNumber(r1Total)}</td>
+                        <td className="py-2 px-3 text-right text-neutral-800 dark:text-neutral-200">{formatDecimal(r1Ori)}</td>
+                        <td className="py-2 px-3 text-right text-amber-600 dark:text-amber-400">{formatDecimal(r1Om)}</td>
+                        <td className="py-2 px-3 text-right text-pink-600 dark:text-pink-400">{formatDecimal(r1Os)}</td>
+                        <td className="py-2 px-3 text-right text-sky-600 dark:text-sky-400">{formatDecimal(r1Yt)}</td>
+                        <td className="py-2 px-4 text-right text-brand-600 dark:text-brand-400 bg-brand-50/50 dark:bg-brand-950/20 font-extrabold">{formatDecimal(r1Total)}</td>
                       </tr>
                     );
                   })()}
@@ -356,39 +362,19 @@ export const TargetView: React.FC<TargetViewProps> = ({
                         <td className="py-2.5 px-3 font-sans font-semibold text-neutral-900 dark:text-neutral-100">{t.nama}</td>
                         <td className="py-2.5 px-2 text-center text-neutral-500 font-sans">R2</td>
                         <td className="py-1.5 px-2 text-right">
-                          <input
-                            type="number"
-                            value={ori || ''}
-                            onChange={(e) => handleVariantFieldChange('YO', idx, 'tg', Number(e.target.value))}
-                            className="w-20 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 font-bold text-neutral-900 dark:text-neutral-100 focus:ring-1 focus:ring-rose-500 focus:outline-none text-xs"
-                          />
+                          <DecimalInput value={ori} onCommit={(v) => handleVariantFieldChange('YO', idx, 'tg', v)} className="w-20 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 font-bold text-neutral-900 dark:text-neutral-100 focus:ring-1 focus:ring-brand-500 focus:outline-none text-xs" />
                         </td>
                         <td className="py-1.5 px-2 text-right">
-                          <input
-                            type="number"
-                            value={om || ''}
-                            onChange={(e) => handleVariantFieldChange('OM', idx, 'tg', Number(e.target.value))}
-                            className="w-20 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 font-bold text-amber-700 dark:text-amber-400 focus:ring-1 focus:ring-amber-500 focus:outline-none text-xs"
-                          />
+                          <DecimalInput value={om} onCommit={(v) => handleVariantFieldChange('OM', idx, 'tg', v)} className="w-20 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 font-bold text-amber-700 dark:text-amber-400 focus:ring-1 focus:ring-amber-500 focus:outline-none text-xs" />
                         </td>
                         <td className="py-1.5 px-2 text-right">
-                          <input
-                            type="number"
-                            value={os || ''}
-                            onChange={(e) => handleVariantFieldChange('OS', idx, 'tg', Number(e.target.value))}
-                            className="w-20 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 font-bold text-rose-700 dark:text-rose-400 focus:ring-1 focus:ring-rose-500 focus:outline-none text-xs"
-                          />
+                          <DecimalInput value={os} onCommit={(v) => handleVariantFieldChange('OS', idx, 'tg', v)} className="w-20 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 font-bold text-pink-700 dark:text-pink-400 focus:ring-1 focus:ring-pink-500 focus:outline-none text-xs" />
                         </td>
                         <td className="py-1.5 px-2 text-right">
-                          <input
-                            type="number"
-                            value={yt || ''}
-                            onChange={(e) => handleVariantFieldChange('YT', idx, 'tg', Number(e.target.value))}
-                            className="w-20 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 font-bold text-sky-700 dark:text-sky-400 focus:ring-1 focus:ring-sky-500 focus:outline-none text-xs"
-                          />
+                          <DecimalInput value={yt} onCommit={(v) => handleVariantFieldChange('YT', idx, 'tg', v)} className="w-20 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 font-bold text-sky-700 dark:text-sky-400 focus:ring-1 focus:ring-sky-500 focus:outline-none text-xs" />
                         </td>
-                        <td className="py-2.5 px-4 text-right font-bold text-rose-600 dark:text-rose-400 bg-rose-50/30 dark:bg-rose-950/10">
-                          {formatNumber(rowSum)}
+                        <td className="py-2.5 px-4 text-right font-bold text-brand-600 dark:text-brand-400 bg-brand-50/30 dark:bg-brand-950/10">
+                          {formatDecimal(rowSum)}
                         </td>
                       </tr>
                     );
@@ -408,26 +394,26 @@ export const TargetView: React.FC<TargetViewProps> = ({
                         <td colSpan={3} className="py-2 px-3 font-sans text-neutral-800 dark:text-neutral-200">
                           Total Rayon 2
                         </td>
-                        <td className="py-2 px-3 text-right text-neutral-800 dark:text-neutral-200">{formatNumber(r2Ori)}</td>
-                        <td className="py-2 px-3 text-right text-amber-600 dark:text-amber-400">{formatNumber(r2Om)}</td>
-                        <td className="py-2 px-3 text-right text-rose-600 dark:text-rose-400">{formatNumber(r2Os)}</td>
-                        <td className="py-2 px-3 text-right text-sky-600 dark:text-sky-400">{formatNumber(r2Yt)}</td>
-                        <td className="py-2 px-4 text-right text-rose-600 dark:text-rose-400 bg-rose-50/50 dark:bg-rose-950/20 font-extrabold">{formatNumber(r2Total)}</td>
+                        <td className="py-2 px-3 text-right text-neutral-800 dark:text-neutral-200">{formatDecimal(r2Ori)}</td>
+                        <td className="py-2 px-3 text-right text-amber-600 dark:text-amber-400">{formatDecimal(r2Om)}</td>
+                        <td className="py-2 px-3 text-right text-pink-600 dark:text-pink-400">{formatDecimal(r2Os)}</td>
+                        <td className="py-2 px-3 text-right text-sky-600 dark:text-sky-400">{formatDecimal(r2Yt)}</td>
+                        <td className="py-2 px-4 text-right text-brand-600 dark:text-brand-400 bg-brand-50/50 dark:bg-brand-950/20 font-extrabold">{formatDecimal(r2Total)}</td>
                       </tr>
                     );
                   })()}
 
                   {/* GRAND TOTAL CABANG JEMBER */}
-                  <tr className="bg-rose-50 dark:bg-rose-950/40 font-extrabold border-t-2 border-rose-400 dark:border-rose-800 text-neutral-900 dark:text-white">
-                    <td colSpan={3} className="py-3 px-3 font-sans text-rose-800 dark:text-rose-300 text-xs">
+                  <tr className="bg-brand-50 dark:bg-brand-950/40 font-extrabold border-t-2 border-brand-400 dark:border-brand-800 text-neutral-900 dark:text-white">
+                    <td colSpan={3} className="py-3 px-3 font-sans text-brand-800 dark:text-brand-300 text-xs">
                       TOTAL CABANG JEMBER
                     </td>
-                    <td className="py-3 px-3 text-right text-neutral-900 dark:text-white">{formatNumber(totalOriTg)}</td>
-                    <td className="py-3 px-3 text-right text-amber-700 dark:text-amber-300">{formatNumber(totalOmTg)}</td>
-                    <td className="py-3 px-3 text-right text-rose-700 dark:text-rose-300">{formatNumber(totalOsTg)}</td>
-                    <td className="py-3 px-3 text-right text-sky-700 dark:text-sky-300">{formatNumber(totalYtTg)}</td>
-                    <td className="py-3 px-4 text-right text-rose-700 dark:text-rose-300 bg-rose-100/70 dark:bg-rose-900/40 text-sm">
-                      {formatNumber(totalTgCabang)}
+                    <td className="py-3 px-3 text-right text-neutral-900 dark:text-white">{formatDecimal(totalOriTg)}</td>
+                    <td className="py-3 px-3 text-right text-amber-700 dark:text-amber-300">{formatDecimal(totalOmTg)}</td>
+                    <td className="py-3 px-3 text-right text-pink-700 dark:text-pink-300">{formatDecimal(totalOsTg)}</td>
+                    <td className="py-3 px-3 text-right text-sky-700 dark:text-sky-300">{formatDecimal(totalYtTg)}</td>
+                    <td className="py-3 px-4 text-right text-brand-700 dark:text-brand-300 bg-brand-100/70 dark:bg-brand-900/40 text-sm">
+                      {formatDecimal(totalTgCabang)}
                     </td>
                   </tr>
                 </tbody>
@@ -436,20 +422,20 @@ export const TargetView: React.FC<TargetViewProps> = ({
           </div>
         )}
 
-        {/* 2. TABEL REALISASI BULAN LALU (AGUSTUS 2026 - 31 HARI) */}
+        {/* 2. TABEL REALISASI BULAN LALU */}
         {activeCategory === 'bulan_lalu' && (
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
-                <span>Realisasi Bulan Lalu — {period.bulanLaluLabel} ({blDays} Hari Kerja)</span>
+                <span>Realisasi Bulan Lalu</span>
                 <span className="text-xs px-2 py-0.5 rounded-md bg-neutral-100 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300 font-semibold">
-                  Rata-rata Botol/Hari & Total Sebulan
+                  Rata2 Botol/Hari
                 </span>
               </h2>
             </div>
 
             <div className="overflow-x-auto rounded-xl border border-neutral-200 dark:border-neutral-800">
-              <table className="w-full text-left text-xs border-collapse min-w-[760px]">
+              <table className="w-full text-left text-xs border-collapse min-w-[680px]">
                 <thead>
                   <tr className="border-b border-neutral-200 dark:border-neutral-800 text-neutral-600 dark:text-neutral-400 text-[11px] bg-neutral-50 dark:bg-neutral-800/60">
                     <th className="py-2.5 px-3 font-semibold text-center w-10">No</th>
@@ -457,20 +443,17 @@ export const TargetView: React.FC<TargetViewProps> = ({
                     <th className="py-2.5 px-2 font-semibold text-center w-14">Rayon</th>
                     <th className="py-2.5 px-3 font-semibold text-right">ORI</th>
                     <th className="py-2.5 px-3 font-semibold text-right text-amber-600 dark:text-amber-400">OM</th>
-                    <th className="py-2.5 px-3 font-semibold text-right text-rose-600 dark:text-rose-400">OS</th>
+                    <th className="py-2.5 px-3 font-semibold text-right text-pink-600 dark:text-pink-400">OS</th>
                     <th className="py-2.5 px-3 font-semibold text-right text-sky-600 dark:text-sky-400">YT</th>
                     <th className="py-2.5 px-3 font-bold text-right text-neutral-900 dark:text-neutral-100 bg-neutral-100/70 dark:bg-neutral-800/80">
                       Rata-rata/Hari
-                    </th>
-                    <th className="py-2.5 px-4 font-bold text-right text-neutral-900 dark:text-neutral-100 bg-neutral-100/90 dark:bg-neutral-800">
-                      Total Sebulan ({blDays} hr)
                     </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800/60 font-mono text-xs">
                   {/* RAYON 1 */}
                   <tr className="bg-neutral-100/60 dark:bg-neutral-800/50 font-bold text-neutral-700 dark:text-neutral-300">
-                    <td colSpan={9} className="py-2 px-3 font-sans">
+                    <td colSpan={8} className="py-2 px-3 font-sans">
                       RAYON 1 JEMBER
                     </td>
                   </tr>
@@ -481,7 +464,6 @@ export const TargetView: React.FC<TargetViewProps> = ({
                     const os = getVarVal('OS', idx, 'bl');
                     const yt = getVarVal('YT', idx, 'bl');
                     const avgDaily = ori + om + os + yt;
-                    const totalMonth = avgDaily * blDays;
 
                     return (
                       <tr key={t.id} className="hover:bg-neutral-50/80 dark:hover:bg-neutral-800/40 transition-colors">
@@ -489,42 +471,19 @@ export const TargetView: React.FC<TargetViewProps> = ({
                         <td className="py-2.5 px-3 font-sans font-semibold text-neutral-900 dark:text-neutral-100">{t.nama}</td>
                         <td className="py-2.5 px-2 text-center text-neutral-500 font-sans">R1</td>
                         <td className="py-1.5 px-2 text-right">
-                          <input
-                            type="number"
-                            value={ori || ''}
-                            onChange={(e) => handleVariantFieldChange('YO', idx, 'bl', Number(e.target.value))}
-                            className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs"
-                          />
+                          <DecimalInput value={ori} onCommit={(v) => handleVariantFieldChange('YO', idx, 'bl', v)} className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs" />
                         </td>
                         <td className="py-1.5 px-2 text-right">
-                          <input
-                            type="number"
-                            value={om || ''}
-                            onChange={(e) => handleVariantFieldChange('OM', idx, 'bl', Number(e.target.value))}
-                            className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs"
-                          />
+                          <DecimalInput value={om} onCommit={(v) => handleVariantFieldChange('OM', idx, 'bl', v)} className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs" />
                         </td>
                         <td className="py-1.5 px-2 text-right">
-                          <input
-                            type="number"
-                            value={os || ''}
-                            onChange={(e) => handleVariantFieldChange('OS', idx, 'bl', Number(e.target.value))}
-                            className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs"
-                          />
+                          <DecimalInput value={os} onCommit={(v) => handleVariantFieldChange('OS', idx, 'bl', v)} className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs" />
                         </td>
                         <td className="py-1.5 px-2 text-right">
-                          <input
-                            type="number"
-                            value={yt || ''}
-                            onChange={(e) => handleVariantFieldChange('YT', idx, 'bl', Number(e.target.value))}
-                            className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs"
-                          />
+                          <DecimalInput value={yt} onCommit={(v) => handleVariantFieldChange('YT', idx, 'bl', v)} className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs" />
                         </td>
                         <td className="py-2.5 px-3 text-right font-bold text-neutral-900 dark:text-neutral-100 bg-neutral-50 dark:bg-neutral-800/40">
-                          {formatNumber(avgDaily)}
-                        </td>
-                        <td className="py-2.5 px-4 text-right font-bold text-neutral-900 dark:text-neutral-100 bg-neutral-100/50 dark:bg-neutral-800/60">
-                          {formatNumber(totalMonth)}
+                          {formatDecimal(avgDaily)}
                         </td>
                       </tr>
                     );
@@ -538,26 +497,24 @@ export const TargetView: React.FC<TargetViewProps> = ({
                     const r1Os = r1Tkus.reduce((a, t) => a + getVarVal('OS', state.tkus.indexOf(t), 'bl'), 0);
                     const r1Yt = r1Tkus.reduce((a, t) => a + getVarVal('YT', state.tkus.indexOf(t), 'bl'), 0);
                     const r1Avg = r1Ori + r1Om + r1Os + r1Yt;
-                    const r1TotalMonth = r1Avg * blDays;
 
                     return (
                       <tr className="bg-neutral-50/90 dark:bg-neutral-800/80 font-bold border-t border-neutral-300 dark:border-neutral-700">
                         <td colSpan={3} className="py-2 px-3 font-sans text-neutral-800 dark:text-neutral-200">
                           Total Rayon 1
                         </td>
-                        <td className="py-2 px-2 text-right">{formatNumber(r1Ori)}</td>
-                        <td className="py-2 px-2 text-right text-amber-600 dark:text-amber-400">{formatNumber(r1Om)}</td>
-                        <td className="py-2 px-2 text-right text-rose-600 dark:text-rose-400">{formatNumber(r1Os)}</td>
-                        <td className="py-2 px-2 text-right text-sky-600 dark:text-sky-400">{formatNumber(r1Yt)}</td>
-                        <td className="py-2 px-3 text-right bg-neutral-100/70 dark:bg-neutral-800">{formatNumber(r1Avg)}</td>
-                        <td className="py-2 px-4 text-right bg-neutral-100 dark:bg-neutral-800 font-extrabold">{formatNumber(r1TotalMonth)}</td>
+                        <td className="py-2 px-2 text-right">{formatDecimal(r1Ori)}</td>
+                        <td className="py-2 px-2 text-right text-amber-600 dark:text-amber-400">{formatDecimal(r1Om)}</td>
+                        <td className="py-2 px-2 text-right text-pink-600 dark:text-pink-400">{formatDecimal(r1Os)}</td>
+                        <td className="py-2 px-2 text-right text-sky-600 dark:text-sky-400">{formatDecimal(r1Yt)}</td>
+                        <td className="py-2 px-3 text-right bg-neutral-100/70 dark:bg-neutral-800">{formatDecimal(r1Avg)}</td>
                       </tr>
                     );
                   })()}
 
                   {/* RAYON 2 */}
                   <tr className="bg-neutral-100/60 dark:bg-neutral-800/50 font-bold text-neutral-700 dark:text-neutral-300">
-                    <td colSpan={9} className="py-2 px-3 font-sans">
+                    <td colSpan={8} className="py-2 px-3 font-sans">
                       RAYON 2 JEMBER
                     </td>
                   </tr>
@@ -568,7 +525,6 @@ export const TargetView: React.FC<TargetViewProps> = ({
                     const os = getVarVal('OS', idx, 'bl');
                     const yt = getVarVal('YT', idx, 'bl');
                     const avgDaily = ori + om + os + yt;
-                    const totalMonth = avgDaily * blDays;
 
                     return (
                       <tr key={t.id} className="hover:bg-neutral-50/80 dark:hover:bg-neutral-800/40 transition-colors">
@@ -576,42 +532,19 @@ export const TargetView: React.FC<TargetViewProps> = ({
                         <td className="py-2.5 px-3 font-sans font-semibold text-neutral-900 dark:text-neutral-100">{t.nama}</td>
                         <td className="py-2.5 px-2 text-center text-neutral-500 font-sans">R2</td>
                         <td className="py-1.5 px-2 text-right">
-                          <input
-                            type="number"
-                            value={ori || ''}
-                            onChange={(e) => handleVariantFieldChange('YO', idx, 'bl', Number(e.target.value))}
-                            className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs"
-                          />
+                          <DecimalInput value={ori} onCommit={(v) => handleVariantFieldChange('YO', idx, 'bl', v)} className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs" />
                         </td>
                         <td className="py-1.5 px-2 text-right">
-                          <input
-                            type="number"
-                            value={om || ''}
-                            onChange={(e) => handleVariantFieldChange('OM', idx, 'bl', Number(e.target.value))}
-                            className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs"
-                          />
+                          <DecimalInput value={om} onCommit={(v) => handleVariantFieldChange('OM', idx, 'bl', v)} className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs" />
                         </td>
                         <td className="py-1.5 px-2 text-right">
-                          <input
-                            type="number"
-                            value={os || ''}
-                            onChange={(e) => handleVariantFieldChange('OS', idx, 'bl', Number(e.target.value))}
-                            className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs"
-                          />
+                          <DecimalInput value={os} onCommit={(v) => handleVariantFieldChange('OS', idx, 'bl', v)} className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs" />
                         </td>
                         <td className="py-1.5 px-2 text-right">
-                          <input
-                            type="number"
-                            value={yt || ''}
-                            onChange={(e) => handleVariantFieldChange('YT', idx, 'bl', Number(e.target.value))}
-                            className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs"
-                          />
+                          <DecimalInput value={yt} onCommit={(v) => handleVariantFieldChange('YT', idx, 'bl', v)} className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs" />
                         </td>
                         <td className="py-2.5 px-3 text-right font-bold text-neutral-900 dark:text-neutral-100 bg-neutral-50 dark:bg-neutral-800/40">
-                          {formatNumber(avgDaily)}
-                        </td>
-                        <td className="py-2.5 px-4 text-right font-bold text-neutral-900 dark:text-neutral-100 bg-neutral-100/50 dark:bg-neutral-800/60">
-                          {formatNumber(totalMonth)}
+                          {formatDecimal(avgDaily)}
                         </td>
                       </tr>
                     );
@@ -625,19 +558,17 @@ export const TargetView: React.FC<TargetViewProps> = ({
                     const r2Os = r2Tkus.reduce((a, t) => a + getVarVal('OS', state.tkus.indexOf(t), 'bl'), 0);
                     const r2Yt = r2Tkus.reduce((a, t) => a + getVarVal('YT', state.tkus.indexOf(t), 'bl'), 0);
                     const r2Avg = r2Ori + r2Om + r2Os + r2Yt;
-                    const r2TotalMonth = r2Avg * blDays;
 
                     return (
                       <tr className="bg-neutral-50/90 dark:bg-neutral-800/80 font-bold border-t border-neutral-300 dark:border-neutral-700">
                         <td colSpan={3} className="py-2 px-3 font-sans text-neutral-800 dark:text-neutral-200">
                           Total Rayon 2
                         </td>
-                        <td className="py-2 px-2 text-right">{formatNumber(r2Ori)}</td>
-                        <td className="py-2 px-2 text-right text-amber-600 dark:text-amber-400">{formatNumber(r2Om)}</td>
-                        <td className="py-2 px-2 text-right text-rose-600 dark:text-rose-400">{formatNumber(r2Os)}</td>
-                        <td className="py-2 px-2 text-right text-sky-600 dark:text-sky-400">{formatNumber(r2Yt)}</td>
-                        <td className="py-2 px-3 text-right bg-neutral-100/70 dark:bg-neutral-800">{formatNumber(r2Avg)}</td>
-                        <td className="py-2 px-4 text-right bg-neutral-100 dark:bg-neutral-800 font-extrabold">{formatNumber(r2TotalMonth)}</td>
+                        <td className="py-2 px-2 text-right">{formatDecimal(r2Ori)}</td>
+                        <td className="py-2 px-2 text-right text-amber-600 dark:text-amber-400">{formatDecimal(r2Om)}</td>
+                        <td className="py-2 px-2 text-right text-pink-600 dark:text-pink-400">{formatDecimal(r2Os)}</td>
+                        <td className="py-2 px-2 text-right text-sky-600 dark:text-sky-400">{formatDecimal(r2Yt)}</td>
+                        <td className="py-2 px-3 text-right bg-neutral-100/70 dark:bg-neutral-800">{formatDecimal(r2Avg)}</td>
                       </tr>
                     );
                   })()}
@@ -647,15 +578,12 @@ export const TargetView: React.FC<TargetViewProps> = ({
                     <td colSpan={3} className="py-3 px-3 font-sans text-xs">
                       TOTAL CABANG JEMBER
                     </td>
-                    <td className="py-3 px-2 text-right">{formatNumber(totalOriBl)}</td>
-                    <td className="py-3 px-2 text-right text-amber-700 dark:text-amber-300">{formatNumber(totalOmBl)}</td>
-                    <td className="py-3 px-2 text-right text-rose-700 dark:text-rose-300">{formatNumber(totalOsBl)}</td>
-                    <td className="py-3 px-2 text-right text-sky-700 dark:text-sky-300">{formatNumber(totalYtBl)}</td>
+                    <td className="py-3 px-2 text-right">{formatDecimal(totalOriBl)}</td>
+                    <td className="py-3 px-2 text-right text-amber-700 dark:text-amber-300">{formatDecimal(totalOmBl)}</td>
+                    <td className="py-3 px-2 text-right text-pink-700 dark:text-pink-300">{formatDecimal(totalOsBl)}</td>
+                    <td className="py-3 px-2 text-right text-sky-700 dark:text-sky-300">{formatDecimal(totalYtBl)}</td>
                     <td className="py-3 px-3 text-right bg-neutral-200/60 dark:bg-neutral-700 text-sm">
-                      {formatNumber(totalBlCabang)}
-                    </td>
-                    <td className="py-3 px-4 text-right bg-neutral-200 dark:bg-neutral-700 font-black text-sm">
-                      {formatNumber(totalBlCabang * blDays)}
+                      {formatDecimal(totalBlCabang)}
                     </td>
                   </tr>
                 </tbody>
@@ -664,20 +592,17 @@ export const TargetView: React.FC<TargetViewProps> = ({
           </div>
         )}
 
-        {/* 3. TABEL REALISASI TAHUN LALU (SEPTEMBER 2025 - 30 HARI) */}
+        {/* 3. TABEL REALISASI TAHUN LALU */}
         {activeCategory === 'tahun_lalu' && (
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
-                <span>Realisasi Tahun Lalu — {period.tahunLaluLabel} ({tyDays} Hari Kerja)</span>
-                <span className="text-xs px-2 py-0.5 rounded-md bg-neutral-100 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300 font-semibold">
-                  Catatan: Varian OS (Strawberry) belum dipasarkan
-                </span>
+                <span>Realisasi Tahun Lalu</span>
               </h2>
             </div>
 
             <div className="overflow-x-auto rounded-xl border border-neutral-200 dark:border-neutral-800">
-              <table className="w-full text-left text-xs border-collapse min-w-[760px]">
+              <table className="w-full text-left text-xs border-collapse min-w-[680px]">
                 <thead>
                   <tr className="border-b border-neutral-200 dark:border-neutral-800 text-neutral-600 dark:text-neutral-400 text-[11px] bg-neutral-50 dark:bg-neutral-800/60">
                     <th className="py-2.5 px-3 font-semibold text-center w-10">No</th>
@@ -690,15 +615,12 @@ export const TargetView: React.FC<TargetViewProps> = ({
                     <th className="py-2.5 px-3 font-bold text-right text-neutral-900 dark:text-neutral-100 bg-neutral-100/70 dark:bg-neutral-800/80">
                       Rata-rata/Hari
                     </th>
-                    <th className="py-2.5 px-4 font-bold text-right text-neutral-900 dark:text-neutral-100 bg-neutral-100/90 dark:bg-neutral-800">
-                      Total Sebulan ({tyDays} hr)
-                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800/60 font-mono text-xs">
                   {/* RAYON 1 */}
                   <tr className="bg-neutral-100/60 dark:bg-neutral-800/50 font-bold text-neutral-700 dark:text-neutral-300">
-                    <td colSpan={9} className="py-2 px-3 font-sans">
+                    <td colSpan={8} className="py-2 px-3 font-sans">
                       RAYON 1 JEMBER
                     </td>
                   </tr>
@@ -708,7 +630,6 @@ export const TargetView: React.FC<TargetViewProps> = ({
                     const om = getVarVal('OM', idx, 'ty');
                     const yt = getVarVal('YT', idx, 'ty');
                     const avgDaily = ori + om + yt;
-                    const totalMonth = avgDaily * tyDays;
 
                     return (
                       <tr key={t.id} className="hover:bg-neutral-50/80 dark:hover:bg-neutral-800/40 transition-colors">
@@ -716,37 +637,19 @@ export const TargetView: React.FC<TargetViewProps> = ({
                         <td className="py-2.5 px-3 font-sans font-semibold text-neutral-900 dark:text-neutral-100">{t.nama}</td>
                         <td className="py-2.5 px-2 text-center text-neutral-500 font-sans">R1</td>
                         <td className="py-1.5 px-2 text-right">
-                          <input
-                            type="number"
-                            value={ori || ''}
-                            onChange={(e) => handleVariantFieldChange('YO', idx, 'ty', Number(e.target.value))}
-                            className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs"
-                          />
+                          <DecimalInput value={ori} onCommit={(v) => handleVariantFieldChange('YO', idx, 'ty', v)} className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs" />
                         </td>
                         <td className="py-1.5 px-2 text-right">
-                          <input
-                            type="number"
-                            value={om || ''}
-                            onChange={(e) => handleVariantFieldChange('OM', idx, 'ty', Number(e.target.value))}
-                            className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs"
-                          />
+                          <DecimalInput value={om} onCommit={(v) => handleVariantFieldChange('OM', idx, 'ty', v)} className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs" />
                         </td>
                         <td className="py-1.5 px-2 text-right text-neutral-400">
                           <span className="text-neutral-400">—</span>
                         </td>
                         <td className="py-1.5 px-2 text-right">
-                          <input
-                            type="number"
-                            value={yt || ''}
-                            onChange={(e) => handleVariantFieldChange('YT', idx, 'ty', Number(e.target.value))}
-                            className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs"
-                          />
+                          <DecimalInput value={yt} onCommit={(v) => handleVariantFieldChange('YT', idx, 'ty', v)} className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs" />
                         </td>
                         <td className="py-2.5 px-3 text-right font-bold text-neutral-900 dark:text-neutral-100 bg-neutral-50 dark:bg-neutral-800/40">
-                          {formatNumber(avgDaily)}
-                        </td>
-                        <td className="py-2.5 px-4 text-right font-bold text-neutral-900 dark:text-neutral-100 bg-neutral-100/50 dark:bg-neutral-800/60">
-                          {formatNumber(totalMonth)}
+                          {formatDecimal(avgDaily)}
                         </td>
                       </tr>
                     );
@@ -759,26 +662,24 @@ export const TargetView: React.FC<TargetViewProps> = ({
                     const r1Om = r1Tkus.reduce((a, t) => a + getVarVal('OM', state.tkus.indexOf(t), 'ty'), 0);
                     const r1Yt = r1Tkus.reduce((a, t) => a + getVarVal('YT', state.tkus.indexOf(t), 'ty'), 0);
                     const r1Avg = r1Ori + r1Om + r1Yt;
-                    const r1TotalMonth = r1Avg * tyDays;
 
                     return (
                       <tr className="bg-neutral-50/90 dark:bg-neutral-800/80 font-bold border-t border-neutral-300 dark:border-neutral-700">
                         <td colSpan={3} className="py-2 px-3 font-sans text-neutral-800 dark:text-neutral-200">
                           Total Rayon 1
                         </td>
-                        <td className="py-2 px-2 text-right">{formatNumber(r1Ori)}</td>
-                        <td className="py-2 px-2 text-right text-amber-600 dark:text-amber-400">{formatNumber(r1Om)}</td>
+                        <td className="py-2 px-2 text-right">{formatDecimal(r1Ori)}</td>
+                        <td className="py-2 px-2 text-right text-amber-600 dark:text-amber-400">{formatDecimal(r1Om)}</td>
                         <td className="py-2 px-2 text-right text-neutral-400">—</td>
-                        <td className="py-2 px-2 text-right text-sky-600 dark:text-sky-400">{formatNumber(r1Yt)}</td>
-                        <td className="py-2 px-3 text-right bg-neutral-100/70 dark:bg-neutral-800">{formatNumber(r1Avg)}</td>
-                        <td className="py-2 px-4 text-right bg-neutral-100 dark:bg-neutral-800 font-extrabold">{formatNumber(r1TotalMonth)}</td>
+                        <td className="py-2 px-2 text-right text-sky-600 dark:text-sky-400">{formatDecimal(r1Yt)}</td>
+                        <td className="py-2 px-3 text-right bg-neutral-100/70 dark:bg-neutral-800">{formatDecimal(r1Avg)}</td>
                       </tr>
                     );
                   })()}
 
                   {/* RAYON 2 */}
                   <tr className="bg-neutral-100/60 dark:bg-neutral-800/50 font-bold text-neutral-700 dark:text-neutral-300">
-                    <td colSpan={9} className="py-2 px-3 font-sans">
+                    <td colSpan={8} className="py-2 px-3 font-sans">
                       RAYON 2 JEMBER
                     </td>
                   </tr>
@@ -788,7 +689,6 @@ export const TargetView: React.FC<TargetViewProps> = ({
                     const om = getVarVal('OM', idx, 'ty');
                     const yt = getVarVal('YT', idx, 'ty');
                     const avgDaily = ori + om + yt;
-                    const totalMonth = avgDaily * tyDays;
 
                     return (
                       <tr key={t.id} className="hover:bg-neutral-50/80 dark:hover:bg-neutral-800/40 transition-colors">
@@ -796,37 +696,19 @@ export const TargetView: React.FC<TargetViewProps> = ({
                         <td className="py-2.5 px-3 font-sans font-semibold text-neutral-900 dark:text-neutral-100">{t.nama}</td>
                         <td className="py-2.5 px-2 text-center text-neutral-500 font-sans">R2</td>
                         <td className="py-1.5 px-2 text-right">
-                          <input
-                            type="number"
-                            value={ori || ''}
-                            onChange={(e) => handleVariantFieldChange('YO', idx, 'ty', Number(e.target.value))}
-                            className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs"
-                          />
+                          <DecimalInput value={ori} onCommit={(v) => handleVariantFieldChange('YO', idx, 'ty', v)} className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs" />
                         </td>
                         <td className="py-1.5 px-2 text-right">
-                          <input
-                            type="number"
-                            value={om || ''}
-                            onChange={(e) => handleVariantFieldChange('OM', idx, 'ty', Number(e.target.value))}
-                            className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs"
-                          />
+                          <DecimalInput value={om} onCommit={(v) => handleVariantFieldChange('OM', idx, 'ty', v)} className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs" />
                         </td>
                         <td className="py-1.5 px-2 text-right text-neutral-400">
                           <span className="text-neutral-400">—</span>
                         </td>
                         <td className="py-1.5 px-2 text-right">
-                          <input
-                            type="number"
-                            value={yt || ''}
-                            onChange={(e) => handleVariantFieldChange('YT', idx, 'ty', Number(e.target.value))}
-                            className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs"
-                          />
+                          <DecimalInput value={yt} onCommit={(v) => handleVariantFieldChange('YT', idx, 'ty', v)} className="w-18 px-2 py-1 text-right rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs" />
                         </td>
                         <td className="py-2.5 px-3 text-right font-bold text-neutral-900 dark:text-neutral-100 bg-neutral-50 dark:bg-neutral-800/40">
-                          {formatNumber(avgDaily)}
-                        </td>
-                        <td className="py-2.5 px-4 text-right font-bold text-neutral-900 dark:text-neutral-100 bg-neutral-100/50 dark:bg-neutral-800/60">
-                          {formatNumber(totalMonth)}
+                          {formatDecimal(avgDaily)}
                         </td>
                       </tr>
                     );
@@ -839,19 +721,17 @@ export const TargetView: React.FC<TargetViewProps> = ({
                     const r2Om = r2Tkus.reduce((a, t) => a + getVarVal('OM', state.tkus.indexOf(t), 'ty'), 0);
                     const r2Yt = r2Tkus.reduce((a, t) => a + getVarVal('YT', state.tkus.indexOf(t), 'ty'), 0);
                     const r2Avg = r2Ori + r2Om + r2Yt;
-                    const r2TotalMonth = r2Avg * tyDays;
 
                     return (
                       <tr className="bg-neutral-50/90 dark:bg-neutral-800/80 font-bold border-t border-neutral-300 dark:border-neutral-700">
                         <td colSpan={3} className="py-2 px-3 font-sans text-neutral-800 dark:text-neutral-200">
                           Total Rayon 2
                         </td>
-                        <td className="py-2 px-2 text-right">{formatNumber(r2Ori)}</td>
-                        <td className="py-2 px-2 text-right text-amber-600 dark:text-amber-400">{formatNumber(r2Om)}</td>
+                        <td className="py-2 px-2 text-right">{formatDecimal(r2Ori)}</td>
+                        <td className="py-2 px-2 text-right text-amber-600 dark:text-amber-400">{formatDecimal(r2Om)}</td>
                         <td className="py-2 px-2 text-right text-neutral-400">—</td>
-                        <td className="py-2 px-2 text-right text-sky-600 dark:text-sky-400">{formatNumber(r2Yt)}</td>
-                        <td className="py-2 px-3 text-right bg-neutral-100/70 dark:bg-neutral-800">{formatNumber(r2Avg)}</td>
-                        <td className="py-2 px-4 text-right bg-neutral-100 dark:bg-neutral-800 font-extrabold">{formatNumber(r2TotalMonth)}</td>
+                        <td className="py-2 px-2 text-right text-sky-600 dark:text-sky-400">{formatDecimal(r2Yt)}</td>
+                        <td className="py-2 px-3 text-right bg-neutral-100/70 dark:bg-neutral-800">{formatDecimal(r2Avg)}</td>
                       </tr>
                     );
                   })()}
@@ -861,15 +741,12 @@ export const TargetView: React.FC<TargetViewProps> = ({
                     <td colSpan={3} className="py-3 px-3 font-sans text-xs">
                       TOTAL CABANG JEMBER
                     </td>
-                    <td className="py-3 px-2 text-right">{formatNumber(totalOriTy)}</td>
-                    <td className="py-3 px-2 text-right text-amber-700 dark:text-amber-300">{formatNumber(totalOmTy)}</td>
+                    <td className="py-3 px-2 text-right">{formatDecimal(totalOriTy)}</td>
+                    <td className="py-3 px-2 text-right text-amber-700 dark:text-amber-300">{formatDecimal(totalOmTy)}</td>
                     <td className="py-3 px-2 text-right text-neutral-400">—</td>
-                    <td className="py-3 px-2 text-right text-sky-700 dark:text-sky-300">{formatNumber(totalYtTy)}</td>
+                    <td className="py-3 px-2 text-right text-sky-700 dark:text-sky-300">{formatDecimal(totalYtTy)}</td>
                     <td className="py-3 px-3 text-right bg-neutral-200/60 dark:bg-neutral-700 text-sm">
-                      {formatNumber(totalTyCabang)}
-                    </td>
-                    <td className="py-3 px-4 text-right bg-neutral-200 dark:bg-neutral-700 font-black text-sm">
-                      {formatNumber(totalTyCabang * tyDays)}
+                      {formatDecimal(totalTyCabang)}
                     </td>
                   </tr>
                 </tbody>
@@ -878,13 +755,13 @@ export const TargetView: React.FC<TargetViewProps> = ({
           </div>
         )}
 
-        {/* 4. TABEL KOMPARASI 3 PERIODE */}
+        {/* 4. TABEL KOMPARASI */}
         {activeCategory === 'komparasi' && (
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
-                <span>Komparasi Target Harian vs Realisasi Bulan Lalu & Tahun Lalu</span>
-                <span className="text-xs px-2 py-0.5 rounded-md bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400 font-semibold">
+                <span>Komparasi Target</span>
+                <span className="text-xs px-2 py-0.5 rounded-md bg-brand-50 text-brand-700 dark:bg-brand-950/40 dark:text-brand-400 font-semibold">
                   Satuan: Botol/Hari
                 </span>
               </h2>
@@ -897,7 +774,7 @@ export const TargetView: React.FC<TargetViewProps> = ({
                     <th className="py-2.5 px-3 font-semibold text-center w-10">No</th>
                     <th className="py-2.5 px-3 font-semibold">Nama TKU</th>
                     <th className="py-2.5 px-2 font-semibold text-center w-14">Rayon</th>
-                    <th className="py-2.5 px-3 font-bold text-right text-rose-600 dark:text-rose-400 bg-rose-50/50 dark:bg-rose-950/20">
+                    <th className="py-2.5 px-3 font-bold text-right text-brand-600 dark:text-brand-400 bg-brand-50/50 dark:bg-brand-950/20">
                       Target {curShort}
                     </th>
                     <th className="py-2.5 px-3 font-semibold text-right">
@@ -928,19 +805,19 @@ export const TargetView: React.FC<TargetViewProps> = ({
                         <td className="py-2.5 px-3 text-center text-neutral-400 font-sans">{idx + 1}</td>
                         <td className="py-2.5 px-3 font-sans font-semibold text-neutral-900 dark:text-neutral-100">{t.nama}</td>
                         <td className="py-2.5 px-2 text-center text-neutral-500 font-sans">R{t.rayon}</td>
-                        <td className="py-2.5 px-3 text-right font-bold text-rose-600 dark:text-rose-400 bg-rose-50/30 dark:bg-rose-950/10">
-                          {formatNumber(tg)}
+                        <td className="py-2.5 px-3 text-right font-bold text-brand-600 dark:text-brand-400 bg-brand-50/30 dark:bg-brand-950/10">
+                          {formatDecimal(tg)}
                         </td>
                         <td className="py-2.5 px-3 text-right text-neutral-700 dark:text-neutral-300">
-                          {formatNumber(bl)}
+                          {formatDecimal(bl)}
                         </td>
                         <td className="py-2.5 px-3 text-right text-neutral-700 dark:text-neutral-300">
-                          {formatNumber(ty)}
+                          {formatDecimal(ty)}
                         </td>
-                        <td className={`py-2.5 px-3 text-right font-semibold ${growthBl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                        <td className={`py-2.5 px-3 text-right font-semibold ${growthBl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
                           {growthBl >= 0 ? '+' : ''}{formatPercent(growthBl)}
                         </td>
-                        <td className={`py-2.5 px-3 text-right font-semibold ${growthTy >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                        <td className={`py-2.5 px-3 text-right font-semibold ${growthTy >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
                           {growthTy >= 0 ? '+' : ''}{formatPercent(growthTy)}
                         </td>
                       </tr>
@@ -948,23 +825,23 @@ export const TargetView: React.FC<TargetViewProps> = ({
                   })}
 
                   {/* TOTAL CABANG */}
-                  <tr className="bg-rose-50 dark:bg-rose-950/40 font-extrabold border-t-2 border-rose-400 dark:border-rose-800 text-neutral-900 dark:text-white">
-                    <td colSpan={3} className="py-3 px-3 font-sans text-rose-800 dark:text-rose-300 text-xs">
+                  <tr className="bg-brand-50 dark:bg-brand-950/40 font-extrabold border-t-2 border-brand-400 dark:border-brand-800 text-neutral-900 dark:text-white">
+                    <td colSpan={3} className="py-3 px-3 font-sans text-brand-800 dark:text-brand-300 text-xs">
                       TOTAL CABANG JEMBER
                     </td>
-                    <td className="py-3 px-3 text-right text-rose-700 dark:text-rose-300 bg-rose-100/70 dark:bg-rose-900/40 text-sm">
-                      {formatNumber(totalTgCabang)}
+                    <td className="py-3 px-3 text-right text-brand-700 dark:text-brand-300 bg-brand-100/70 dark:bg-brand-900/40 text-sm">
+                      {formatDecimal(totalTgCabang)}
                     </td>
                     <td className="py-3 px-3 text-right text-sm">
-                      {formatNumber(totalBlCabang)}
+                      {formatDecimal(totalBlCabang)}
                     </td>
                     <td className="py-3 px-3 text-right text-sm">
-                      {formatNumber(totalTyCabang)}
+                      {formatDecimal(totalTyCabang)}
                     </td>
-                    <td className={`py-3 px-3 text-right font-extrabold ${totalTgCabang >= totalBlCabang ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                    <td className={`py-3 px-3 text-right font-extrabold ${totalTgCabang >= totalBlCabang ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
                       {totalTgCabang >= totalBlCabang ? '+' : ''}{formatPercent(totalBlCabang > 0 ? (totalTgCabang - totalBlCabang) / totalBlCabang : 0)}
                     </td>
-                    <td className={`py-3 px-3 text-right font-extrabold ${totalTgCabang >= totalTyCabang ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                    <td className={`py-3 px-3 text-right font-extrabold ${totalTgCabang >= totalTyCabang ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
                       {totalTgCabang >= totalTyCabang ? '+' : ''}{formatPercent(totalTyCabang > 0 ? (totalTgCabang - totalTyCabang) / totalTyCabang : 0)}
                     </td>
                   </tr>

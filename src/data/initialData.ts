@@ -3,7 +3,7 @@ import { TkuItem, ArchiveRecord, MotivationQuote, DailySalesRecord } from '../ty
 export const INITIAL_TKUS: TkuItem[] = [
   {
     "id": 1,
-    "nama": "JEMBER",
+    "nama": "JEMBER 1",
     "rayon": 1,
     "targetHarian": 3430,
     "penjualanAkm": [
